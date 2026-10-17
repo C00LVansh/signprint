@@ -3,6 +3,8 @@
 //! Nothing in here does I/O or picks random numbers. Callers pass nonces and
 //! keys in, which keeps every format reproducible from test vectors.
 
+pub mod b64;
+pub mod bind;
 pub mod keys;
 pub mod seal;
 
