@@ -1,0 +1,15 @@
+/target/
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# secrets and runtime data
+.env
+.env.*
+*.key
+*.pem
+keyring*.json
+*.redb
+*.sqlite
+*.sqlite3
