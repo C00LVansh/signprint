@@ -14,10 +14,11 @@ export function formatNonce(tab: number, ctr: bigint | number): string {
 
 export class Counter {
   readonly tab: number;
-  private next = 0n;
+  private next: bigint;
 
-  constructor(tab: number = randomTabId()) {
+  constructor(tab: number = randomTabId(), start: bigint = 0n) {
     this.tab = tab;
+    this.next = start;
   }
 
   take(): string {
