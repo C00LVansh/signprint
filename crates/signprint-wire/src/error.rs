@@ -12,6 +12,8 @@ pub enum Error {
     UnknownKid(u8),
     #[error("authentication failed")]
     BadSeal,
+    #[error("content-digest does not match the body")]
+    DigestMismatch,
     #[error("malformed {0}")]
     Malformed(&'static str),
 }
