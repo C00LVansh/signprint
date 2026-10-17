@@ -13,3 +13,7 @@ keyring*.json
 *.redb
 *.sqlite
 *.sqlite3
+
+# playwright
+test-results/
+playwright-report/
