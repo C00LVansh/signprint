@@ -7,6 +7,7 @@ pub mod b64;
 pub mod bind;
 pub mod challenge;
 pub mod keys;
+pub mod nonce;
 pub mod seal;
 pub mod token;
 
