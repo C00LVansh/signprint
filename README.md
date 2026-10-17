@@ -13,10 +13,10 @@ Reverse-engineering the client doesn't help much, because the key that matters o
 
 ## Status
 
-Very early. Nothing here is usable yet. Right now I'm working on the wire format and signer:
+Very early. Nothing here is usable yet. The wire format and signer are in; the proxy is next.
 
-- [ ] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
-- [ ] TypeScript signer (`client/`)
+- [x] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
+- [x] TypeScript signer (`client/`), tested against the same vectors and in Chromium/Firefox/WebKit
 - [ ] Pingora proxy
 - [ ] session issuance + scoring
 - [ ] canvas challenge
@@ -26,8 +26,20 @@ Very early. Nothing here is usable yet. Right now I'm working on the wire format
 ## Layout
 
 ```
-crates/   Rust workspace
-client/   browser client (TypeScript)
+crates/        Rust workspace
+client/        browser client (TypeScript)
+testvectors/   shared vectors the Rust and TS sides both test against
+```
+
+## Development
+
+```sh
+cargo test --workspace
+
+cd client
+npm ci
+npm test               # node, against testvectors/
+npm run test:browser   # chromium, firefox, webkit (npx playwright install first)
 ```
 
 ## License
