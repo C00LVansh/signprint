@@ -86,7 +86,12 @@ pub fn seal(key: &[u8; KEY_LEN], header: &Header, plaintext: &[u8]) -> Vec<u8> {
 
 /// Authenticates and decrypts. `host_id` must match the header, which stops a
 /// token minted for one site being replayed against another.
-pub fn open(key: &[u8; KEY_LEN], sealed: &[u8], kind: Kind, host_id: u16) -> Result<Vec<u8>, Error> {
+pub fn open(
+    key: &[u8; KEY_LEN],
+    sealed: &[u8],
+    kind: Kind,
+    host_id: u16,
+) -> Result<Vec<u8>, Error> {
     let header = Header::peek(sealed, kind)?;
     if header.host_id != host_id {
         return Err(Error::WrongHost);
@@ -129,11 +134,23 @@ mod tests {
         let key = [1u8; 32];
         let mut sealed = seal(&key, &header(Kind::Token), b"hello");
 
-        assert!(matches!(open(&key, &sealed, Kind::Challenge, 9), Err(Error::WrongKind)));
-        assert!(matches!(open(&key, &sealed, Kind::Token, 8), Err(Error::WrongHost)));
-        assert!(matches!(open(&[2u8; 32], &sealed, Kind::Token, 9), Err(Error::BadSeal)));
+        assert!(matches!(
+            open(&key, &sealed, Kind::Challenge, 9),
+            Err(Error::WrongKind)
+        ));
+        assert!(matches!(
+            open(&key, &sealed, Kind::Token, 8),
+            Err(Error::WrongHost)
+        ));
+        assert!(matches!(
+            open(&[2u8; 32], &sealed, Kind::Token, 9),
+            Err(Error::BadSeal)
+        ));
 
         sealed[2] ^= 1; // kid is in the AAD
-        assert!(matches!(open(&key, &sealed, Kind::Token, 9), Err(Error::BadSeal)));
+        assert!(matches!(
+            open(&key, &sealed, Kind::Token, 9),
+            Err(Error::BadSeal)
+        ));
     }
 }

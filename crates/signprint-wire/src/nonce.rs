@@ -48,11 +48,19 @@ mod tests {
     #[test]
     fn parses_canonical_forms() {
         let n = RequestNonce::parse("9f3a1c07.17").unwrap();
-        assert_eq!(n, RequestNonce { tab: 0x9f3a1c07, ctr: 17 });
+        assert_eq!(
+            n,
+            RequestNonce {
+                tab: 0x9f3a1c07,
+                ctr: 17
+            }
+        );
         assert_eq!(n.to_string(), "9f3a1c07.17");
         assert_eq!(RequestNonce::parse("00000000.0").unwrap().ctr, 0);
         assert_eq!(
-            RequestNonce::parse("ffffffff.18446744073709551615").unwrap().ctr,
+            RequestNonce::parse("ffffffff.18446744073709551615")
+                .unwrap()
+                .ctr,
             u64::MAX
         );
     }

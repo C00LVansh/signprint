@@ -38,7 +38,11 @@ impl ReplayWindow {
 
         if ctr > self.top {
             let shift = ctr - self.top;
-            self.seen = if shift >= WINDOW { 0 } else { self.seen << shift };
+            self.seen = if shift >= WINDOW {
+                0
+            } else {
+                self.seen << shift
+            };
             self.seen |= 1;
             self.top = ctr;
             return Verdict::Fresh;

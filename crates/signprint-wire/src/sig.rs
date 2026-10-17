@@ -136,10 +136,7 @@ pub fn parse(signature_input: &str, signature: &str) -> Result<Received, Error> 
         if !item.params.is_empty() {
             return Err(bad("component parameters"));
         }
-        let name = item
-            .bare_item
-            .as_string()
-            .ok_or(bad("component name"))?;
+        let name = item.bare_item.as_string().ok_or(bad("component name"))?;
         names.push(name.as_str());
     }
     let covers_body = if names == BASE_COMPONENTS {
@@ -163,7 +160,11 @@ pub fn parse(signature_input: &str, signature: &str) -> Result<Received, Error> 
         .as_string()
         .ok_or(bad("keyid"))?
         .as_str();
-    if keyid.is_empty() || !keyid.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+    if keyid.is_empty()
+        || !keyid
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
         return Err(bad("keyid"));
     }
     let nonce = list.params["nonce"].as_string().ok_or(bad("nonce"))?;
@@ -201,7 +202,9 @@ pub fn canonical_authority(authority: &str, https: bool) -> Result<String, Error
     let bad = || Error::Malformed("authority");
     if authority.is_empty()
         || authority.contains('@')
-        || authority.bytes().any(|c| c.is_ascii_whitespace() || c.is_ascii_control())
+        || authority
+            .bytes()
+            .any(|c| c.is_ascii_whitespace() || c.is_ascii_control())
     {
         return Err(bad());
     }
@@ -249,7 +252,10 @@ mod tests {
         Params {
             created: 1_760_716_800,
             keyid: "AgEBAAE".into(),
-            nonce: RequestNonce { tab: 0x9f3a1c07, ctr: 17 },
+            nonce: RequestNonce {
+                tab: 0x9f3a1c07,
+                ctr: 17,
+            },
         }
     }
 
@@ -303,7 +309,10 @@ mod tests {
             // extra parameter
             ok.replace(";tag=", ";alg=\"hmac-sha256\";tag="),
             // params out of order
-            ok.replace(";created=1760716800;keyid=\"AgEBAAE\"", ";keyid=\"AgEBAAE\";created=1760716800"),
+            ok.replace(
+                ";created=1760716800;keyid=\"AgEBAAE\"",
+                ";keyid=\"AgEBAAE\";created=1760716800",
+            ),
             // wrong tag
             ok.replace("signprint/1", "signprint/2"),
             // non-canonical nonce
@@ -314,7 +323,10 @@ mod tests {
         for c in cases {
             assert!(parse(&format!("sp={c}"), &sig).is_err(), "accepted {c}");
         }
-        assert!(parse(&format!("sp={ok}"), "sp=:AAAA:").is_err(), "short mac");
+        assert!(
+            parse(&format!("sp={ok}"), "sp=:AAAA:").is_err(),
+            "short mac"
+        );
     }
 
     #[test]
@@ -336,7 +348,14 @@ mod tests {
         ok("shop.example:8443", true, "shop.example:8443");
         ok("[2001:DB8::1]:443", true, "[2001:db8::1]");
         ok("[2001:db8::1]:8443", true, "[2001:db8::1]:8443");
-        for bad in ["", "user@shop.example", "shop.example:", "shop .example", "a:b:c", "[::1"] {
+        for bad in [
+            "",
+            "user@shop.example",
+            "shop.example:",
+            "shop .example",
+            "a:b:c",
+            "[::1",
+        ] {
             assert!(canonical_authority(bad, true).is_err(), "{bad:?}");
         }
     }

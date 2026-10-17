@@ -112,7 +112,11 @@ impl SessionToken {
             host_id: ring.host_id(),
             nonce,
         };
-        b64::encode_url(&seal::seal(&ring.current().seal_token, &header, &self.to_bytes()))
+        b64::encode_url(&seal::seal(
+            &ring.current().seal_token,
+            &header,
+            &self.to_bytes(),
+        ))
     }
 
     pub fn open(ring: &KeyRing, encoded: &str) -> Result<Self, Error> {
