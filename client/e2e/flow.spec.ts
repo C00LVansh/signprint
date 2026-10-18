@@ -156,3 +156,29 @@ test("calibration, then the same engine's answers match", async ({ page }) => {
   expect(out.cal.class).toMatch(/^(blink|gecko|webkit)\/\d+\/\w+$/);
   expect(out.status).toBe(200);
 });
+
+test("another tab refreshing doesn't break this one", async ({ context }) => {
+  const a = await context.newPage();
+  const b = await context.newPage();
+  for (const p of [a, b]) {
+    await p.goto("/e2e/index.html");
+    await p.waitForFunction(() => (window as unknown as { clientLoaded?: boolean }).clientLoaded === true);
+  }
+  let challenges = 0;
+  context.on("request", (r) => {
+    if (r.url().endsWith("/.well-known/signprint/v1/challenge")) challenges++;
+  });
+  const call = (p: import("@playwright/test").Page, refresh: boolean) =>
+    p.evaluate(async (refresh) => {
+      const w = window as unknown as { sp?: Client; SignprintClient: new () => Client };
+      w.sp ??= new w.SignprintClient();
+      if (refresh) await w.sp.refresh();
+      return (await w.sp.fetch("/api/items")).status;
+    }, refresh);
+
+  expect(await call(a, false)).toBe(200); // a attests; the session is stored
+  expect(await call(b, false)).toBe(200); // b picks it up from storage
+  expect(await call(a, true)).toBe(200); // a refreshes: b's token is now retired
+  expect(await call(b, false)).toBe(200); // b recovers from storage, no new challenge
+  expect(challenges).toBe(1);
+});

@@ -327,6 +327,13 @@ export class SignprintClient {
           continue;
         }
         if (RETRYABLE.has(err.code)) {
+          // Another tab may have refreshed the shared session, which retires
+          // the token we hold. Pick up the stored one before starting over.
+          const stored = await loadSession(this.origin);
+          if (stored && stored.token !== s.token) {
+            this.current = Promise.resolve(stored);
+            continue;
+          }
           this.reset();
           continue;
         }
