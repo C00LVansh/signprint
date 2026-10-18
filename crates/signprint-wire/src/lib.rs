@@ -9,6 +9,7 @@ pub mod challenge;
 pub mod digest;
 pub mod keys;
 pub mod nonce;
+pub mod pow;
 pub mod replay;
 pub mod seal;
 pub mod sig;

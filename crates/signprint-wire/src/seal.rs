@@ -22,6 +22,7 @@ pub const TAG_LEN: usize = 16;
 pub enum Kind {
     Token = 1,
     Challenge = 2,
+    Pow = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

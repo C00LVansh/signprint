@@ -13,6 +13,7 @@ pub const KEY_LEN: usize = 32;
 pub struct Subkeys {
     pub seal_token: [u8; KEY_LEN],
     pub seal_challenge: [u8; KEY_LEN],
+    pub seal_pow: [u8; KEY_LEN],
     pub bind: [u8; KEY_LEN],
 }
 
@@ -22,6 +23,7 @@ impl Subkeys {
         Self {
             seal_token: expand(&hk, b"signprint/1 seal-token", host_id),
             seal_challenge: expand(&hk, b"signprint/1 seal-cid", host_id),
+            seal_pow: expand(&hk, b"signprint/1 seal-pow", host_id),
             bind: expand(&hk, b"signprint/1 bind", host_id),
         }
     }
