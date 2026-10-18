@@ -10,6 +10,7 @@
 import { fromBase64Url, toBase64, toBase64Url } from "./b64.ts";
 import { deriveSessionKey, exportPublicKey, generateClientKey } from "./crypto.ts";
 import { Counter } from "./nonce.ts";
+import { challenge as canvasChallenge, pattern as canvasPattern } from "./canvas.ts";
 import { solvePow, type PowOffer } from "./pow.ts";
 import { collectSignals } from "./signals.ts";
 import { signRequest } from "./sign.ts";
@@ -52,6 +53,7 @@ interface Offer {
   program: string;
   /** Signal names the server's rules read. */
   signals?: string[];
+  canvas?: { seed: number; rounds: number; size: number; pattern_seed: number } | null;
   expires_at: number;
   server_time: number;
 }
@@ -171,11 +173,22 @@ export class SignprintClient {
     delete globalThis.__signprint![offer.probe_key];
     const answers = probe();
     const signals = await collectSignals(offer.signals ?? []);
+    let canvas: { answer: string; pattern: string } | undefined;
+    if (offer.canvas) {
+      try {
+        canvas = {
+          answer: await canvasChallenge(offer.canvas.seed, offer.canvas.rounds, offer.canvas.size),
+          pattern: await canvasPattern(offer.canvas.pattern_seed),
+        };
+      } catch {
+        // canvas blocked or unavailable; the server sees it wasn't answered
+      }
+    }
 
     const client = await generateClientKey();
     const clientPublic = toBase64Url(await exportPublicKey(client.publicKey));
     const key = await deriveSessionKey(client.privateKey, fromBase64Url(offer.ephemeral_public));
-    const body = JSON.stringify({ cid: offer.cid, client_public: clientPublic, probe: answers, signals });
+    const body = JSON.stringify({ cid: offer.cid, client_public: clientPublic, probe: answers, signals, canvas });
     const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(ATTEST_DOMAIN + body)));
 
     const att = await fetch(this.origin + WELL_KNOWN + "attest", {
@@ -258,6 +271,29 @@ export class SignprintClient {
     const headers = new Headers();
     for (const [k, v] of Object.entries(signed)) headers.set(k, v);
     return headers;
+  }
+
+  /**
+   * Operators only: renders every seed in the proxy's canvas pool on this
+   * device and records the answers for the class this browser claims. Run it
+   * on real devices you trust (your own machines, a device lab); the answers
+   * become what other browsers of the same class are compared against.
+   */
+  async calibrate(token: string): Promise<{ class: string; added: number }> {
+    const headers = { "signprint-calibrate": token };
+    const list = await fetch(this.origin + WELL_KNOWN + "calibrate", { headers, cache: "no-store" });
+    if (!list.ok) throw await readError(list);
+    const { seeds, rounds, size } = (await list.json()) as { seeds: number[]; rounds: number; size: number };
+    const answers: [number, string][] = [];
+    for (const seed of seeds) answers.push([seed, await canvasChallenge(seed, rounds, size)]);
+    const device = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+    const res = await fetch(this.origin + WELL_KNOWN + "calibrate", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ device, answers }),
+    });
+    if (!res.ok) throw await readError(res);
+    return res.json();
   }
 
   /** `fetch`, but signed. Refreshes or re-attests and retries once if the proxy asks for it. */
