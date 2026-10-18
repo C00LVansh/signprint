@@ -2311,8 +2311,11 @@ dependencies = [
 name = "signprint-core"
 version = "0.0.1"
 dependencies = [
+ "getrandom 0.4.3",
  "hkdf",
  "hmac",
+ "p256",
+ "serde",
  "serde_json",
  "sha2",
  "signprint-wire",

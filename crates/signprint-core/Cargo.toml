@@ -9,14 +9,15 @@ rust-version.workspace = true
 
 [dependencies]
 signprint-wire = { path = "../signprint-wire" }
+getrandom = "0.4"
 hkdf.workspace = true
 hmac.workspace = true
+p256.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true
