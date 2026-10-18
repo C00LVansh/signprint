@@ -24,4 +24,9 @@ export class Counter {
   take(): string {
     return formatNonce(this.tab, this.next++);
   }
+
+  /** The counter value the next take() will use. */
+  get upcoming(): bigint {
+    return this.next;
+  }
 }

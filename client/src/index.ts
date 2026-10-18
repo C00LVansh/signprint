@@ -9,3 +9,4 @@ export { SignprintClient, SignprintError } from "./client.ts";
 export type { ClientOptions } from "./client.ts";
 export { collectSignals } from "./signals.ts";
 export type { Signals } from "./signals.ts";
+export type { StoredSession } from "./store.ts";

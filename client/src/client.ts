@@ -11,10 +11,24 @@ import { fromBase64Url, toBase64, toBase64Url } from "./b64.ts";
 import { deriveSessionKey, exportPublicKey, generateClientKey } from "./crypto.ts";
 import { Counter } from "./nonce.ts";
 import { collectSignals } from "./signals.ts";
-import { signRequest, type Session } from "./sign.ts";
+import { signRequest } from "./sign.ts";
+import { clearSession, loadCounterState, loadSession, saveCounterState, saveSession, type StoredSession } from "./store.ts";
 
 const WELL_KNOWN = "/.well-known/signprint/v1/";
 const ATTEST_DOMAIN = "signprint/1 attest\n";
+
+// Must match FINGERPRINT_KEYS in crates/signprint-core/src/issue.rs.
+const FINGERPRINT_KEYS = [
+  "js.engine",
+  "js.ua",
+  "js.platform",
+  "js.hw_concurrency",
+  "js.languages_len",
+  "js.webgl_renderer",
+];
+
+/** Refresh this long (seconds) before the token expires. */
+const REFRESH_MARGIN = 120;
 
 // errors where getting a fresh session and retrying once can help
 const RETRYABLE = new Set(["sp_required", "sp_auth", "sp_stale", "sp_reattest", "sp_rebind", "sp_expired"]);
@@ -95,27 +109,49 @@ export interface ClientOptions {
 
 export class SignprintClient {
   private readonly origin: string;
-  private session: Promise<Session> | null = null;
+  private current: Promise<StoredSession> | null = null;
+  private readonly counter: Counter;
 
   constructor(opts: ClientOptions = {}) {
     this.origin = opts.origin ?? location.origin;
+    const saved = loadCounterState();
+    this.counter = saved ? new Counter(saved.tab, saved.next) : new Counter();
   }
 
-  /** Runs the challenge now instead of on the first request. */
-  ready(): Promise<Session> {
-    this.session ??= this.attest().catch((e) => {
-      this.session = null;
+  /** Gets a session now (from storage, or by running the challenge) instead of on the first request. */
+  ready(): Promise<StoredSession> {
+    this.current ??= this.restoreOrAttest().catch((e) => {
+      this.current = null;
       throw e;
     });
-    return this.session;
+    return this.current;
   }
 
-  /** Drops the current session; the next request attests again. */
+  /** Forgets the session; the next request runs a fresh challenge. */
   reset(): void {
-    this.session = null;
+    this.current = null;
+    void clearSession(this.origin);
   }
 
-  private async attest(): Promise<Session> {
+  /**
+   * Swaps the session for a new token and key. If the server won't refresh
+   * it (fingerprint changed, too old, ...), falls back to a full challenge.
+   */
+  async refresh(): Promise<void> {
+    const prev = await this.ready();
+    const next = this.refreshFrom(prev).catch(() => this.attest());
+    this.current = next;
+    next.catch(() => {
+      if (this.current === next) this.current = null;
+    });
+    await next;
+  }
+
+  private async restoreOrAttest(): Promise<StoredSession> {
+    return (await loadSession(this.origin)) ?? this.attest();
+  }
+
+  private async attest(): Promise<StoredSession> {
     const res = await fetch(this.origin + WELL_KNOWN + "challenge", { cache: "no-store", credentials: "same-origin" });
     if (!res.ok) throw await readError(res);
     const offer = (await res.json()) as Offer;
@@ -128,15 +164,10 @@ export class SignprintClient {
     const signals = await collectSignals(offer.signals ?? []);
 
     const client = await generateClientKey();
+    const clientPublic = toBase64Url(await exportPublicKey(client.publicKey));
     const key = await deriveSessionKey(client.privateKey, fromBase64Url(offer.ephemeral_public));
-    const body = JSON.stringify({
-      cid: offer.cid,
-      client_public: toBase64Url(await exportPublicKey(client.publicKey)),
-      probe: answers,
-      signals,
-    });
-    const enc = new TextEncoder();
-    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(ATTEST_DOMAIN + body)));
+    const body = JSON.stringify({ cid: offer.cid, client_public: clientPublic, probe: answers, signals });
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(ATTEST_DOMAIN + body)));
 
     const att = await fetch(this.origin + WELL_KNOWN + "attest", {
       method: "POST",
@@ -148,26 +179,76 @@ export class SignprintClient {
     if (!att.ok) throw await readError(att);
     const issued = (await att.json()) as { token: string; expires_at: number; server_time: number };
 
-    return {
+    const session: StoredSession = {
       token: issued.token,
       key,
-      counter: new Counter(),
+      clientPrivate: client.privateKey,
+      clientPublic,
+      expiresAt: issued.expires_at,
       clockOffsetMs: issued.server_time * 1000 - Date.now(),
     };
+    await saveSession(this.origin, session);
+    return session;
   }
 
-  /** `fetch`, but signed. Re-attests and retries once if the proxy asks for it. */
+  private async refreshFrom(s: StoredSession): Promise<StoredSession> {
+    const body = new TextEncoder().encode(
+      JSON.stringify({ client_public: s.clientPublic, fp: await collectSignals(FINGERPRINT_KEYS) }),
+    );
+    const url = new URL(this.origin + WELL_KNOWN + "refresh");
+    const headers = await this.sign(s, "POST", url, body);
+    headers.set("content-type", "application/json");
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: body as BodyInit,
+      cache: "no-store",
+      credentials: "same-origin",
+      redirect: "manual",
+    });
+    if (!res.ok) throw await readError(res);
+    const r = (await res.json()) as { token: string; ephemeral_public: string; expires_at: number; server_time: number };
+
+    const fresh: StoredSession = {
+      ...s,
+      token: r.token,
+      // same client key, new server key: only we can derive this
+      key: await deriveSessionKey(s.clientPrivate, fromBase64Url(r.ephemeral_public)),
+      expiresAt: r.expires_at,
+      clockOffsetMs: r.server_time * 1000 - Date.now(),
+    };
+    await saveSession(this.origin, fresh);
+    return fresh;
+  }
+
+  private async sign(s: StoredSession, method: string, url: URL, body: Uint8Array | null): Promise<Headers> {
+    const signed = await signRequest(method, url, body, {
+      token: s.token,
+      key: s.key,
+      counter: this.counter,
+      clockOffsetMs: s.clockOffsetMs,
+    });
+    saveCounterState(this.counter.tab, this.counter.upcoming);
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(signed)) headers.set(k, v);
+    return headers;
+  }
+
+  /** `fetch`, but signed. Refreshes or re-attests and retries once if the proxy asks for it. */
   async fetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
     const body = await bodyBytes(init, input);
     const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     const url = new URL(input instanceof Request ? input.url : String(input), location.href);
 
     for (let attempt = 0; ; attempt++) {
-      const session = await this.ready();
-      const signed = await signRequest(method, url, body, session);
-      const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
-      for (const [k, v] of Object.entries(signed)) headers.set(k, v);
+      let s = await this.ready();
+      if ((Date.now() + s.clockOffsetMs) / 1000 >= s.expiresAt - REFRESH_MARGIN) {
+        await this.refresh();
+        s = await this.ready();
+      }
 
+      const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+      for (const [k, v] of await this.sign(s, method, url, body)) headers.set(k, v);
       const res = await fetch(url, {
         ...init,
         method,
@@ -179,6 +260,10 @@ export class SignprintClient {
 
       if (attempt === 0 && (res.status === 401 || res.status === 400)) {
         const err = await readError(res.clone());
+        if (err.code === "sp_rebind") {
+          await this.refresh();
+          continue;
+        }
         if (RETRYABLE.has(err.code)) {
           this.reset();
           continue;
