@@ -5,6 +5,7 @@
 
 pub mod issue;
 pub mod network;
+pub mod pow;
 pub mod probe;
 pub mod store;
 pub mod verdict;

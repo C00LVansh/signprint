@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 signprint-rules = { path = "../signprint-rules" }
 signprint-wire = { path = "../signprint-wire" }
+argon2 = "0.6"
 getrandom = "0.4"
 hkdf.workspace = true
 hmac.workspace = true
