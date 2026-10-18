@@ -2,8 +2,9 @@
 //! challenge, turns the client's answers into `cnv.*` signals for the rules,
 //! and takes calibration runs.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use signprint_canvas::class::{self, DeviceClass};
 use signprint_canvas::kb::{Kb, Verdict};
@@ -36,6 +37,32 @@ impl Default for CanvasConfig {
 pub struct Canvas {
     cfg: CanvasConfig,
     kb: RwLock<Kb>,
+    seen: Mutex<Seen>,
+}
+
+/// Which engine/OS combinations reported each (seed, answer) recently. Real
+/// devices on different engines or OSes don't produce identical renders, so
+/// one answer turning up under several of them is a replay or an emulator.
+/// Memory only, bounded, and cleared wholesale when it fills up.
+#[derive(Default)]
+struct Seen {
+    map: HashMap<(u32, String), BTreeSet<(String, String)>>,
+}
+
+const SEEN_MAX_KEYS: usize = 100_000;
+const SEEN_MAX_PLATFORMS: usize = 16;
+
+impl Seen {
+    fn record(&mut self, seed: u32, answer: &str, class: &DeviceClass) -> usize {
+        if self.map.len() >= SEEN_MAX_KEYS {
+            self.map.clear();
+        }
+        let set = self.map.entry((seed, answer.to_owned())).or_default();
+        if set.len() < SEEN_MAX_PLATFORMS {
+            set.insert((class.engine.clone(), class.os.clone()));
+        }
+        set.len()
+    }
 }
 
 /// What a challenge asks the browser to draw.
@@ -79,6 +106,7 @@ impl Canvas {
         Ok(Self {
             cfg,
             kb: RwLock::new(kb),
+            seen: Mutex::default(),
         })
     }
 
@@ -131,6 +159,12 @@ impl Canvas {
             );
         }
         if let (Some(answer), Some(class)) = (answer, ua.and_then(class::claimed)) {
+            let platforms = self
+                .seen
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record(seed, answer, &class);
+            s.insert("cnv.shared_platforms".into(), Value::Num(platforms as f64));
             match self
                 .read()
                 .judge(&class, seed, answer, self.cfg.min_devices)
@@ -229,6 +263,37 @@ mod tests {
         let s = c.signals(Some(WIN), 100, &id, None, None);
         assert_eq!(s.get("cnv.present"), Some(&Value::Bool(false)));
         assert!(!s.contains_key("cnv.match"));
+    }
+
+    #[test]
+    fn one_answer_under_many_platforms_is_counted() {
+        let c = canvas();
+        let id = [1u8; 16];
+        let mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15";
+        let shared = |s: &Signals| s.get("cnv.shared_platforms").cloned();
+
+        assert_eq!(
+            shared(&c.signals(Some(WIN), 9, &id, Some("SAME"), None)),
+            Some(Value::Num(1.0))
+        );
+        // the same device again doesn't add anything
+        assert_eq!(
+            shared(&c.signals(Some(WIN), 9, &id, Some("SAME"), None)),
+            Some(Value::Num(1.0))
+        );
+        assert_eq!(
+            shared(&c.signals(Some(LINUX), 9, &id, Some("SAME"), None)),
+            Some(Value::Num(2.0))
+        );
+        assert_eq!(
+            shared(&c.signals(Some(mac), 9, &id, Some("SAME"), None)),
+            Some(Value::Num(3.0))
+        );
+        // a different answer is counted separately
+        assert_eq!(
+            shared(&c.signals(Some(mac), 9, &id, Some("OTHER"), None)),
+            Some(Value::Num(1.0))
+        );
     }
 
     #[test]

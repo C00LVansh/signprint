@@ -171,6 +171,13 @@ when = "cnv.match == true"
 note = "renders like calibrated devices of the class it claims"
 
 [[rule]]
+id = "core.canvas_shared_answer"
+family = "challenge"
+weight = 40
+when = "cnv.shared_platforms >= 3"
+note = "the same canvas answer came from browsers claiming 3+ different engine/OS combinations (works without calibration)"
+
+[[rule]]
 id = "core.canvas_noise_unexplained"
 family = "consistency"
 weight = 30

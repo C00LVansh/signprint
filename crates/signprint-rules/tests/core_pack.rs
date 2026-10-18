@@ -155,6 +155,12 @@ fn canvas_rules() {
     noisy.insert("js.uad_brands".into(), s("Brave/141, Chromium/141"));
     assert!(hits(&noisy).is_empty(), "Brave adds noise on purpose");
 
+    let mut replayed = sig.clone();
+    replayed.insert("cnv.shared_platforms".into(), Value::Num(3.0));
+    assert_eq!(hits(&replayed), ["core.canvas_shared_answer"]);
+    replayed.insert("cnv.shared_platforms".into(), Value::Num(2.0));
+    assert!(hits(&replayed).is_empty());
+
     let mut skipped = desktop_chrome();
     skipped.insert("cnv.present".into(), Value::Bool(false));
     assert_eq!(hits(&skipped), ["core.canvas_skipped"]);
