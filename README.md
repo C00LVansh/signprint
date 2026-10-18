@@ -13,7 +13,7 @@ Reverse-engineering the client doesn't help much, because the key that matters o
 
 ## Status
 
-Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. Sessions are scored with rule packs and carry a band (0 to 3) into every verdict; high bands have to earn their session with an Argon2id proof of work. The canvas challenge is next.
+Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. Sessions are scored with rule packs and carry a band (0 to 3) into every verdict; high bands have to earn their session with an Argon2id proof of work, and the canvas challenge checks a browser renders like the device it claims to be. The public demo is next.
 
 - [x] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
 - [x] TypeScript signer (`client/`), tested against the same vectors and in Chromium/Firefox/WebKit
@@ -22,7 +22,7 @@ Early, but the core loop works: a browser can get a session from the proxy and m
 - [x] session issuance: challenge, per-challenge probe program, ECDH attestation, `SignprintClient`
 - [x] session refresh with a mid-session fingerprint re-check; sessions persist across page loads
 - [x] scoring with rule packs (`rulepacks/core` is built in)
-- [ ] canvas challenge
+- [x] canvas challenge: known-answer noise check, Picasso-style render, calibration
 - [x] Argon2id proof-of-work step-up for high bands
 - [ ] demo you can try to break
 
@@ -76,6 +76,27 @@ bands = [0, 30, 70]   # score upper bounds for bands 0, 1, 2
 ```
 
 Rules are a few lines of TOML each; see `rulepacks/core/core.toml` for the format.
+
+### Canvas challenge
+
+Every challenge asks the browser to draw a seeded scene (curves, text, gradients, shadows) and a simple known-answer pattern. Different browser, OS and GPU stacks draw the scene slightly differently, so the answer says something about what the device really is, and a seed from your own private pool can't be precomputed.
+
+Answers are compared with ones from **calibrated** devices: real machines you trust that you run the calibration on. Until a class (engine, major version, OS) has enough calibrated devices, its answers aren't judged. The known-answer pattern works without calibration and catches canvas noise injection.
+
+```toml
+[canvas]
+kb_path = "/var/lib/signprint/canvas.json"
+min_devices = 3
+calibrate_token_env = "SIGNPRINT_CALIBRATE"
+```
+
+Then, on each device you want to calibrate, open your site and run in the console:
+
+```js
+await new SignprintClient().calibrate("<the token>")
+```
+
+The answer database is built from your own devices on purpose: learning it from live traffic would let a bot farm teach it its own answers.
 
 ### Proof of work
 
