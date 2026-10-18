@@ -9,6 +9,11 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("challenge, attest, then signed requests are allowed", async ({ page }) => {
+  const steps: string[] = [];
+  page.on("request", (r) => {
+    const m = /\/\.well-known\/signprint\/v1\/(challenge|attest|pow)$/.exec(r.url());
+    if (m) steps.push(m[1]!);
+  });
   const out = await page.evaluate(async () => {
     const { SignprintClient } = window as unknown as {
       SignprintClient: new () => { fetch(i: string, init?: RequestInit): Promise<Response> };
@@ -37,6 +42,10 @@ test("challenge, attest, then signed requests are allowed", async ({ page }) => 
   // decides what to do with it.
   const band = Number(/;band=(\d);/.exec(out[0]!.echo.headers["signprint-verdict"]!)![1]);
   expect(band).toBeGreaterThanOrEqual(2);
+  // ...and at band 2+ the session had to be earned with a proof of work
+  expect(steps).toEqual(["challenge", "attest", "pow"]);
+  const flags = Number(/;flags=(\d+);/.exec(out[0]!.echo.headers["signprint-verdict"]!)![1]);
+  expect(flags & 2).toBe(2); // POW_PASSED
   expect(out[0]!.echo.body_len).toBe(JSON.stringify({ qty: 1 }).length);
   expect(out[0]!.echo.path).toBe("/api/cart?n=1");
   // same session for every request: the day-keyed sid hash doesn't change

@@ -39,6 +39,11 @@ keyring = "$WORK/keyring.json"
 upstream_secret_env = "SIGNPRINT_UPSTREAM_SECRET"
 log_root_env = "SIGNPRINT_LOG_ROOT"
 
+# small puzzles: the CI browsers are automation, so they always step up
+[pow]
+memory_kib = 1024
+bits = [2, 3]
+
 [[route]]
 path_prefix = "/api/"
 require = "signed"

@@ -15,7 +15,7 @@ PAGE = b"""<!doctype html>
 <meta charset="utf-8">
 <title>signprint e2e</title>
 <script type="module">
-  import { SignprintClient } from "/e2e/client/index.js";
+  import { SignprintClient } from "/e2e/client/signprint.js";
   window.SignprintClient = SignprintClient;
   window.clientLoaded = true;
 </script>
