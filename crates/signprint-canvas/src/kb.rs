@@ -27,6 +27,22 @@ struct ClassEntry {
 pub struct Kb {
     pool: Vec<u32>,
     classes: BTreeMap<String, (DeviceClass, ClassEntry)>,
+    /// WebGL answers, keyed by the GPU the browser reports (its normalised
+    /// WebGL renderer string). WebGL output is decided by the GPU and driver
+    /// rather than the browser, so different browsers on one machine agree.
+    #[serde(default)]
+    gpus: BTreeMap<String, ClassEntry>,
+}
+
+/// Lowercased, whitespace-squashed, length-capped renderer string.
+pub fn gpu_key(renderer: &str) -> String {
+    let squashed: Vec<&str> = renderer.split_whitespace().collect();
+    squashed
+        .join(" ")
+        .to_lowercase()
+        .chars()
+        .take(128)
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +70,7 @@ impl Kb {
         Self {
             pool,
             classes: BTreeMap::new(),
+            gpus: BTreeMap::new(),
         }
     }
 
@@ -149,6 +166,69 @@ impl Kb {
         }
     }
 
+    /// Records WebGL answers from a calibrating device for the GPU it reports.
+    pub fn calibrate_gpu(
+        &mut self,
+        renderer: &str,
+        device: &str,
+        answers: &[(u32, String)],
+    ) -> usize {
+        let key = gpu_key(renderer);
+        if key.is_empty() {
+            return 0;
+        }
+        let entry = self.gpus.entry(key).or_default();
+        if entry.devices.len() < MAX_DEVICES_PER_CLASS {
+            entry.devices.insert(device.to_owned());
+        }
+        let mut added = 0;
+        for (seed, answer) in answers {
+            if !self.pool.contains(seed) {
+                continue;
+            }
+            let set = entry.answers.entry(*seed).or_default();
+            if set.len() < MAX_ANSWERS_PER_SEED && set.insert(answer.clone()) {
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Like [`judge`](Self::judge), but against the GPU the browser reports.
+    /// `ClassLie` here means it renders like a different, calibrated GPU.
+    pub fn judge_gpu(
+        &self,
+        renderer: &str,
+        seed: u32,
+        answer: &str,
+        min_devices: usize,
+    ) -> Verdict {
+        let key = gpu_key(renderer);
+        let Some(entry) = self
+            .gpus
+            .get(&key)
+            .filter(|e| e.devices.len() >= min_devices)
+        else {
+            return Verdict::Unknown;
+        };
+        let Some(answers) = entry.answers.get(&seed) else {
+            return Verdict::Unknown;
+        };
+        if answers.contains(answer) {
+            return Verdict::Match;
+        }
+        let elsewhere = self.gpus.iter().any(|(k, e)| {
+            *k != key
+                && e.devices.len() >= min_devices
+                && e.answers.get(&seed).is_some_and(|a| a.contains(answer))
+        });
+        if elsewhere {
+            Verdict::ClassLie
+        } else {
+            Verdict::Mismatch
+        }
+    }
+
     pub fn summary(&self) -> Vec<(String, usize, usize)> {
         self.classes
             .iter()
@@ -222,6 +302,30 @@ mod tests {
             &[(1, "x".into()), (99, "y".into())],
         );
         assert_eq!(added, 1);
+    }
+
+    #[test]
+    fn webgl_is_judged_by_reported_gpu() {
+        let mut kb = Kb::with_pool([10]);
+        let nvidia = "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)";
+        let swift =
+            "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)";
+        kb.calibrate_gpu(nvidia, "a", &[(10, "NV".into())]);
+        kb.calibrate_gpu(swift, "b", &[(10, "SW".into())]);
+
+        assert_eq!(kb.judge_gpu(nvidia, 10, "NV", 1), Verdict::Match);
+        // whitespace and case don't matter
+        assert_eq!(
+            kb.judge_gpu(&nvidia.to_uppercase().replace(' ', "  "), 10, "NV", 1),
+            Verdict::Match
+        );
+        // claims an RTX 3060, renders like SwiftShader: a spoofed renderer string
+        assert_eq!(kb.judge_gpu(nvidia, 10, "SW", 1), Verdict::ClassLie);
+        assert_eq!(kb.judge_gpu(nvidia, 10, "??", 1), Verdict::Mismatch);
+        assert_eq!(
+            kb.judge_gpu("Some Other GPU", 10, "NV", 1),
+            Verdict::Unknown
+        );
     }
 
     #[test]

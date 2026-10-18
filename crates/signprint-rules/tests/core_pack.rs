@@ -161,6 +161,15 @@ fn canvas_rules() {
     replayed.insert("cnv.shared_platforms".into(), Value::Num(2.0));
     assert!(hits(&replayed).is_empty());
 
+    let mut gl_lie = sig.clone();
+    gl_lie.insert("cnv.gl_match".into(), Value::Bool(false));
+    gl_lie.insert("cnv.gl_class_lie".into(), Value::Bool(true));
+    assert_eq!(hits(&gl_lie), ["core.webgl_gpu_lie"]);
+
+    let mut gl_ok = sig.clone();
+    gl_ok.insert("cnv.gl_match".into(), Value::Bool(true));
+    assert_eq!(hits(&gl_ok), ["core.webgl_match"]);
+
     let mut skipped = desktop_chrome();
     skipped.insert("cnv.present".into(), Value::Bool(false));
     assert_eq!(hits(&skipped), ["core.canvas_skipped"]);

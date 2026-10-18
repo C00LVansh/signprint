@@ -137,6 +137,53 @@ impl Canvas {
         }
     }
 
+    /// `cnv.gl_*` signals: the WebGL answer judged against the GPU the browser
+    /// reports. No shared-answer counting here: several browsers on one
+    /// machine legitimately agree on WebGL.
+    pub fn webgl_signals(
+        &self,
+        renderer: Option<&str>,
+        seed: u32,
+        answer: Option<&str>,
+    ) -> Signals {
+        let mut s = Signals::new();
+        s.insert("cnv.gl_present".into(), Value::Bool(answer.is_some()));
+        if let (Some(answer), Some(renderer)) = (answer, renderer) {
+            match self
+                .read()
+                .judge_gpu(renderer, seed, answer, self.cfg.min_devices)
+            {
+                Verdict::Unknown => {}
+                Verdict::Match => {
+                    s.insert("cnv.gl_match".into(), Value::Bool(true));
+                }
+                Verdict::Mismatch => {
+                    s.insert("cnv.gl_match".into(), Value::Bool(false));
+                }
+                Verdict::ClassLie => {
+                    s.insert("cnv.gl_match".into(), Value::Bool(false));
+                    s.insert("cnv.gl_class_lie".into(), Value::Bool(true));
+                }
+            }
+        }
+        s
+    }
+
+    /// Adds WebGL calibration answers for the GPU a device reports, and saves.
+    pub fn calibrate_gpu(
+        &self,
+        renderer: &str,
+        device: &str,
+        answers: &[(u32, String)],
+    ) -> Result<usize, CanvasError> {
+        let mut kb = self.kb.write().unwrap_or_else(|p| p.into_inner());
+        let added = kb.calibrate_gpu(renderer, device, answers);
+        if let Some(p) = &self.cfg.kb_path {
+            kb.save(p).map_err(CanvasError::Save)?;
+        }
+        Ok(added)
+    }
+
     /// `cnv.*` signals for an attestation. `ua` is the User-Agent the proxy saw.
     pub fn signals(
         &self,

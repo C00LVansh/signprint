@@ -238,6 +238,8 @@ struct AttestBody {
 struct CanvasAnswer {
     answer: String,
     pattern: String,
+    #[serde(default)]
+    webgl: Option<String>,
 }
 
 fn random<const N: usize>() -> [u8; N] {
@@ -455,6 +457,17 @@ impl Issuer {
                 a.map(|a| a.pattern.as_str()),
             );
             signals.extend(cnv);
+            // the GPU being tested is the one the browser itself reports
+            let renderer = match signals.get("js.webgl_renderer") {
+                Some(Value::Str(r)) => Some(r.clone()),
+                _ => None,
+            };
+            let gl = canvas.webgl_signals(
+                renderer.as_deref(),
+                challenge.canvas.known_seed,
+                a.and_then(|a| a.webgl.as_deref()),
+            );
+            signals.extend(gl);
         }
         let fp_digest = bind::tag(&self.ring.current().bind, "fp", &fp_canonical(&signals));
         let score = self.rules.score(&signals);

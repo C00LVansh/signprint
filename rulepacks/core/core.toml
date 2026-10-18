@@ -178,6 +178,27 @@ when = "cnv.shared_platforms >= 3"
 note = "the same canvas answer came from browsers claiming 3+ different engine/OS combinations (works without calibration)"
 
 [[rule]]
+id = "core.webgl_gpu_lie"
+family = "challenge"
+weight = 45
+when = "cnv.gl_class_lie == true"
+note = "reports one GPU but renders WebGL exactly like a different, calibrated GPU (spoofed renderer string)"
+
+[[rule]]
+id = "core.webgl_unknown_answer"
+family = "challenge"
+weight = 10
+when = "cnv.gl_match == false && !has(cnv.gl_class_lie)"
+note = "WebGL answer not seen from the calibrated GPU it reports"
+
+[[rule]]
+id = "core.webgl_match"
+family = "challenge"
+weight = -10
+when = "cnv.gl_match == true"
+note = "renders WebGL like calibrated devices with the GPU it reports"
+
+[[rule]]
 id = "core.canvas_noise_unexplained"
 family = "consistency"
 weight = 30
