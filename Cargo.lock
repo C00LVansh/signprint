@@ -570,6 +570,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "signprint-core"
+version = "0.0.1"
+dependencies = [
+ "hkdf",
+ "hmac",
+ "sha2",
+ "signprint-wire",
+ "subtle",
+ "thiserror",
+]
+
+[[package]]
 name = "signprint-wire"
 version = "0.0.1"
 dependencies = [
