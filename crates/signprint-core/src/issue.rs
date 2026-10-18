@@ -24,6 +24,7 @@ use signprint_wire::pow::PowTicket;
 use signprint_wire::token::{Flags, SessionToken};
 use signprint_wire::{b64, sig};
 
+use crate::canvas::{Canvas, Task};
 use crate::network::Network;
 use crate::pow::{self, PowParams};
 use crate::probe::{self, Program};
@@ -108,6 +109,8 @@ impl IssuerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Offer {
     pub cid: String,
+    /// What to draw, when the canvas challenge is on.
+    pub canvas: Option<Task>,
     /// Where the probe program registers itself on `self.__signprint`.
     pub probe_key: String,
     /// Uncompressed SEC1 point, the format WebCrypto's "raw" import expects.
@@ -227,6 +230,14 @@ struct AttestBody {
     probe: std::collections::HashMap<String, u64>,
     #[serde(default)]
     signals: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    canvas: Option<CanvasAnswer>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CanvasAnswer {
+    answer: String,
+    pattern: String,
 }
 
 fn random<const N: usize>() -> [u8; N] {
@@ -251,6 +262,7 @@ pub struct Issuer {
     rules: RuleSet,
     /// Client-side signals the loaded rules read; everything else is dropped.
     wanted: Vec<String>,
+    canvas: Option<Canvas>,
 }
 
 impl Issuer {
@@ -270,7 +282,18 @@ impl Issuer {
             cfg,
             rules,
             wanted,
+            canvas: None,
         }
+    }
+
+    /// Turns on the canvas challenge.
+    pub fn with_canvas(mut self, canvas: Canvas) -> Self {
+        self.canvas = Some(canvas);
+        self
+    }
+
+    pub fn canvas(&self) -> Option<&Canvas> {
+        self.canvas.as_ref()
     }
 
     /// Signals the client should collect (sent with the challenge).
@@ -288,23 +311,29 @@ impl Issuer {
         (net_tag, ja4)
     }
 
-    pub fn challenge(&self, net: &Network, now: u64) -> Offer {
+    /// `ua` is the User-Agent of the challenge request; it decides which
+    /// canvas seed to ask for.
+    pub fn challenge(&self, net: &Network, ua: Option<&str>, now: u64) -> Offer {
         let eph = new_ephemeral();
+        let id: [u8; 16] = random();
+        let task = self
+            .canvas
+            .as_ref()
+            .map(|c| c.task(ua, &id, u32::from_be_bytes(random())));
         let (bind_net, bind_ja4) = self.net_tags(net);
         let expires_at = now as u32 + self.cfg.challenge_ttl_secs;
         let c = Challenge {
-            id: random(),
+            id,
             issued_at: now as u32,
             expires_at,
             ephemeral_secret: eph.to_bytes().into(),
             bind_net,
             bind_ja4: bind_ja4.unwrap_or([0; 8]),
-            // canvas and pow aren't wired up yet
             canvas: CanvasParams {
-                known_seed: 0,
+                known_seed: task.map_or(0, |t| t.seed),
                 calibration_seeds: vec![],
-                rounds: 0,
-                size: 0,
+                rounds: task.map_or(0, |t| t.rounds),
+                size: task.map_or(0, |t| t.size),
             },
             probe_seed: u64::from_be_bytes(random()),
             probe_subset: 0,
@@ -313,6 +342,7 @@ impl Issuer {
         };
         let point = eph.public_key().to_sec1_point(false);
         Offer {
+            canvas: task,
             probe_key: probe::registry_key(&c.id),
             cid: c.seal(&self.ring, random()),
             ephemeral_public: point
@@ -410,6 +440,21 @@ impl Issuer {
             .collect();
         for (k, v) in server_signals {
             signals.insert(k.clone(), v.clone());
+        }
+        if let Some(canvas) = self.canvas.as_ref().filter(|_| challenge.canvas.rounds > 0) {
+            let ua = match server_signals.get("http.ua") {
+                Some(Value::Str(ua)) => Some(ua.as_str()),
+                _ => None,
+            };
+            let a = req.canvas.as_ref();
+            let cnv = canvas.signals(
+                ua,
+                challenge.canvas.known_seed,
+                &challenge.id,
+                a.map(|a| a.answer.as_str()),
+                a.map(|a| a.pattern.as_str()),
+            );
+            signals.extend(cnv);
         }
         let fp_digest = bind::tag(&self.ring.current().bind, "fp", &fp_canonical(&signals));
         let score = self.rules.score(&signals);
@@ -694,7 +739,7 @@ mod tests {
     fn full_flow_mints_a_working_token() {
         let i = issuer();
         let store = MemoryStore::default();
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, k) = attest_body(&offer, |a| a as u64);
         let issued = i
             .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW + 1)
@@ -711,7 +756,7 @@ mod tests {
     fn challenge_is_single_use() {
         let i = issuer();
         let store = MemoryStore::default();
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         assert!(
             i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
@@ -728,14 +773,14 @@ mod tests {
         let i = issuer();
         let store = MemoryStore::default();
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64 + 1);
         assert_eq!(
             i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW),
             Err(AttestError::Rejected)
         );
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, _, _) = attest_body(&offer, |a| a as u64);
         let forged = b64::encode_std(&[0u8; 32]);
         assert_eq!(
@@ -747,7 +792,7 @@ mod tests {
             Err(AttestError::Rejected)
         );
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         assert_eq!(
             i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW + 60),
@@ -759,7 +804,7 @@ mod tests {
     fn attest_must_come_from_the_same_tls_client() {
         let i = issuer();
         let store = MemoryStore::default();
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         let mut other = net();
         other.ja4n = Some("t13d1715h2_5b57614c22b0_3d5424432f57".into());
@@ -775,7 +820,7 @@ mod tests {
         let store = MemoryStore::default();
         let mut n = net();
         n.ja4n = None;
-        let offer = i.challenge(&n, NOW);
+        let offer = i.challenge(&n, None, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         let issued = i
             .attest(&store, &body, Some(&mac), &n, &Signals::new(), NOW)
@@ -790,7 +835,7 @@ mod tests {
         let i = issuer();
         let store = MemoryStore::default();
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         let clean = i
             .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
@@ -798,7 +843,7 @@ mod tests {
             .session();
         assert_eq!(clean.band, 0);
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let flagged = serde_json::json!({ "js.webdriver": true });
         let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged);
         let issued = i
@@ -815,7 +860,7 @@ mod tests {
     fn client_cant_set_server_signals() {
         let i = issuer();
         let store = MemoryStore::default();
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         // the client claims a clean http.ua; the proxy's observed value wins
         let claimed = serde_json::json!({ "http.ua": "Mozilla/5.0 Chrome/141" });
         let (body, mac, _) = attest_body_with(&offer, |a| a as u64, claimed);
@@ -864,7 +909,7 @@ mod tests {
     /// Attests with a known client key and fingerprint, returns what refresh needs.
     fn session_with_fp(i: &Issuer, fp: serde_json::Value) -> (Issued, SecretKey) {
         let store = MemoryStore::default();
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let client = new_ephemeral();
         let eph = PublicKey::from_sec1_bytes(&offer.ephemeral_public).unwrap();
         let k: [u8; 32] = p256::ecdh::diffie_hellman(client.to_nonzero_scalar(), eph.as_affine())
@@ -974,14 +1019,14 @@ mod tests {
         let store = MemoryStore::default();
 
         // clean sessions still go straight through
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         assert!(matches!(
             i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW),
             Ok(Attested::Session(_))
         ));
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let flagged = serde_json::json!({ "js.webdriver": true });
         let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged);
         let Ok(Attested::StepUp(up)) =
@@ -1022,7 +1067,7 @@ mod tests {
         let store = MemoryStore::default();
         let flagged = serde_json::json!({ "js.webdriver": true });
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged.clone());
         let Ok(Attested::StepUp(up)) =
             i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
@@ -1045,7 +1090,7 @@ mod tests {
             Err(AttestError::Rejected)
         );
 
-        let offer = i.challenge(&net(), NOW);
+        let offer = i.challenge(&net(), None, NOW);
         let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged);
         let Ok(Attested::StepUp(up)) =
             i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
@@ -1056,6 +1101,104 @@ mod tests {
             i.redeem(&store, &up.ticket, &[0, 0, 0, 0], NOW + 300),
             Err(AttestError::Expired)
         );
+    }
+
+    #[test]
+    fn canvas_answers_feed_the_score() {
+        use crate::canvas::{Canvas, CanvasConfig};
+        use signprint_canvas::pattern;
+
+        const WIN: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+        const LINUX: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+
+        let pack = signprint_rules::Pack::parse(
+            r#"
+            [pack]
+            name = "c"
+            version = "0"
+            license = "Apache-2.0"
+            [[rule]]
+            id = "c.lie"
+            family = "challenge"
+            weight = 50
+            when = "cnv.class_lie == true"
+            [[rule]]
+            id = "c.ok"
+            family = "challenge"
+            weight = -10
+            when = "cnv.match == true"
+            "#,
+        )
+        .unwrap();
+        let mut n = 0;
+        let canvas = Canvas::open(
+            CanvasConfig {
+                min_devices: 1,
+                pool_size: 1,
+                ..CanvasConfig::default()
+            },
+            || {
+                n += 1;
+                4242 * n
+            },
+        )
+        .unwrap();
+        canvas
+            .calibrate(WIN, "dev-w", &[(4242, "WIN-ANSWER".into())])
+            .unwrap();
+        canvas
+            .calibrate(LINUX, "dev-l", &[(4242, "LINUX-ANSWER".into())])
+            .unwrap();
+        let i = Issuer::new(
+            KeyRing::new(1, 1, &[(1, [3; 32])]).unwrap(),
+            IssuerConfig {
+                pow: None,
+                ..IssuerConfig::default()
+            },
+            RuleSet::new(vec![pack]),
+        )
+        .with_canvas(canvas);
+        let store = MemoryStore::default();
+        let server: Signals = [("http.ua".to_string(), Value::Str(WIN.into()))].into();
+
+        let attest_with = |answer: &str| {
+            let offer = i.challenge(&net(), Some(WIN), NOW);
+            let task = offer.canvas.unwrap();
+            assert_eq!(task.seed, 4242, "calibrated seed for the claimed class");
+            let client = new_ephemeral();
+            let eph = PublicKey::from_sec1_bytes(&offer.ephemeral_public).unwrap();
+            let k: [u8; 32] =
+                p256::ecdh::diffie_hellman(client.to_nonzero_scalar(), eph.as_affine())
+                    .raw_secret_bytes()
+                    .as_slice()
+                    .try_into()
+                    .unwrap();
+            let program = i.program(&offer.cid, NOW).unwrap();
+            let body = serde_json::json!({
+                "cid": offer.cid,
+                "client_public": b64::encode_url(client.public_key().to_sec1_point(false).as_bytes()),
+                "probe": { program.field: program.answer },
+                "canvas": { "answer": answer, "pattern": pattern::expected_hash(task.pattern_seed) },
+            })
+            .to_string()
+            .into_bytes();
+            let mut m = Hmac::<Sha256>::new_from_slice(&k).unwrap();
+            m.update(ATTEST_DOMAIN);
+            m.update(&body);
+            let mac = b64::encode_std(&m.finalize().into_bytes());
+            i.attest(&store, &body, Some(&mac), &net(), &server, NOW)
+                .unwrap()
+                .session()
+        };
+
+        let honest = attest_with("WIN-ANSWER");
+        assert_eq!(honest.hits, ["c.ok"]);
+        assert_eq!(honest.band, 0);
+
+        // says Windows in every header, draws exactly like Linux Chrome
+        let liar = attest_with("LINUX-ANSWER");
+        assert_eq!(liar.hits, ["c.lie"]);
+        assert_eq!(liar.band, 2);
     }
 
     #[test]

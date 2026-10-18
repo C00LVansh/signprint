@@ -201,7 +201,7 @@ impl App {
                 body: whoami_body(&net, ja4),
             },
             ("GET", "challenge") => {
-                let offer = self.issuer.challenge(&net, now);
+                let offer = self.issuer.challenge(&net, req.user_agent, now);
                 Reply::json(
                     200,
                     serde_json::json!({

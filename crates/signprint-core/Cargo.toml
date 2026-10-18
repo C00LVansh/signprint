@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+signprint-canvas = { path = "../signprint-canvas" }
 signprint-rules = { path = "../signprint-rules" }
 signprint-wire = { path = "../signprint-wire" }
 argon2 = "0.6"
