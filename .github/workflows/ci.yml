@@ -62,3 +62,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p signprint-proxy
       - run: crates/signprint-proxy/tests/e2e/run.sh target/debug/signprint-proxy
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: cargo build -p signprint-proxy
+      - working-directory: client
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          npx playwright install --with-deps chromium firefox webkit
+      - run: crates/signprint-proxy/tests/e2e/browser.sh target/debug/signprint-proxy

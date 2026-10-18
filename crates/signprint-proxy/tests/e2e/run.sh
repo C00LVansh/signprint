@@ -2,56 +2,9 @@
 # End-to-end check of the real proxy binary: TLS termination, JA4 capture,
 # enforce-mode rejection and the verdict header reaching the upstream.
 # Linux/macOS only. Needs curl, openssl, python3 and jq.
-set -euo pipefail
-
-BIN=${1:-target/debug/signprint-proxy}
-WORK=$(mktemp -d)
-trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"' EXIT
-HERE=$(cd "$(dirname "$0")" && pwd)
-
-fail() { echo "FAIL: $*" >&2; exit 1; }
-
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-  -keyout "$WORK/key.pem" -out "$WORK/cert.pem" -days 1 -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost" 2>/dev/null
-
-"$BIN" keygen 1 > "$WORK/keys.txt"
-sed -n '/^{/,/^}/p' "$WORK/keys.txt" > "$WORK/keyring.json"
-export SIGNPRINT_UPSTREAM_SECRET=$(grep '^SIGNPRINT_UPSTREAM_SECRET=' "$WORK/keys.txt" | cut -d= -f2)
-export SIGNPRINT_LOG_ROOT=$(grep '^SIGNPRINT_LOG_ROOT=' "$WORK/keys.txt" | cut -d= -f2)
-
-cat > "$WORK/signprint.toml" <<TOML
-mode = "enforce"
-
-[listen]
-tls = "127.0.0.1:18443"
-
-[tls]
-cert = "$WORK/cert.pem"
-key = "$WORK/key.pem"
-
-[upstream]
-addr = "127.0.0.1:18080"
-
-[keys]
-keyring = "$WORK/keyring.json"
-upstream_secret_env = "SIGNPRINT_UPSTREAM_SECRET"
-log_root_env = "SIGNPRINT_LOG_ROOT"
-
-[[route]]
-path_prefix = "/api/"
-require = "signed"
-TOML
-
-"$BIN" check "$WORK/signprint.toml" >/dev/null || fail "config check"
-
-python3 "$HERE/upstream.py" 18080 &
-"$BIN" run "$WORK/signprint.toml" > "$WORK/proxy.log" 2>&1 &
-
-for _ in $(seq 50); do
-  curl -sk -o /dev/null https://localhost:18443/ && break
-  sleep 0.2
-done
+source "$(dirname "$0")/lib.sh"
+[ $# -gt 0 ] && BIN=$1
+start_stack enforce
 
 CURL=(curl -sk --resolve localhost:18443:127.0.0.1)
 

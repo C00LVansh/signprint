@@ -1,0 +1,72 @@
+// Full stack: browser -> signprint proxy (TLS, JA4) -> echo upstream.
+import { expect, test } from "@playwright/test";
+
+type Echo = { headers: Record<string, string>; body_len: number; path: string };
+
+test.beforeEach(async ({ page }) => {
+  await page.goto("/e2e/index.html");
+  await page.waitForFunction(() => (window as unknown as { clientLoaded?: boolean }).clientLoaded === true);
+});
+
+test("challenge, attest, then signed requests are allowed", async ({ page }) => {
+  const out = await page.evaluate(async () => {
+    const { SignprintClient } = window as unknown as {
+      SignprintClient: new () => { fetch(i: string, init?: RequestInit): Promise<Response> };
+    };
+    const sp = new SignprintClient();
+    const results = [];
+    for (const qty of [1, 2, 3]) {
+      const res = await sp.fetch(`/api/cart?n=${qty}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ qty }),
+      });
+      results.push({ status: res.status, echo: (await res.json()) as Echo });
+    }
+    const get = await sp.fetch("/api/items");
+    results.push({ status: get.status, echo: (await get.json()) as Echo });
+    return results;
+  });
+
+  for (const r of out) {
+    expect(r.status).toBe(200);
+    expect(r.echo.headers["signprint-verdict"]).toMatch(/^v=1;act=allow;mode=enforce;/);
+  }
+  expect(out[0]!.echo.body_len).toBe(JSON.stringify({ qty: 1 }).length);
+  expect(out[0]!.echo.path).toBe("/api/cart?n=1");
+  // same session for every request: the day-keyed sid hash doesn't change
+  const sids = out.map((r) => /;sid=([0-9a-f]+);/.exec(r.echo.headers["signprint-verdict"]!)![1]);
+  expect(new Set(sids).size).toBe(1);
+});
+
+test("unsigned API calls are refused", async ({ page }) => {
+  const res = await page.evaluate(async () => {
+    const r = await fetch("/api/cart", { method: "POST", body: "{}" });
+    return { status: r.status, body: await r.json() };
+  });
+  expect(res.status).toBe(401);
+  expect(res.body.error).toBe("sp_required");
+});
+
+test("a replayed signed request is refused", async ({ page }) => {
+  const res = await page.evaluate(async () => {
+    const { SignprintClient } = window as unknown as {
+      SignprintClient: new () => { fetch(i: string, init?: RequestInit): Promise<Response> };
+    };
+    // capture the signed headers from one request and send them again verbatim
+    let captured: Headers | null = null;
+    const realFetch = window.fetch;
+    window.fetch = async (input, init) => {
+      if (String(input).includes("/api/once")) captured = new Headers(init?.headers);
+      return realFetch(input, init);
+    };
+    const sp = new SignprintClient();
+    const first = await sp.fetch("/api/once");
+    window.fetch = realFetch;
+    const replay = await fetch("/api/once", { headers: captured! });
+    return { first: first.status, replay: replay.status, error: (await replay.json()).error };
+  });
+  expect(res.first).toBe(200);
+  expect(res.replay).toBe(401);
+  expect(res.error).toBe("sp_auth");
+});

@@ -14,5 +14,5 @@
     "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test", "test-browser", "playwright.config.ts"]
+  "include": ["src", "test", "test-browser", "e2e", "playwright.config.ts", "playwright.e2e.config.ts"]
 }
