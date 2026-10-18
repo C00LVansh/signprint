@@ -18,3 +18,7 @@ pub fn decode_url(s: &str) -> Result<Vec<u8>, Error> {
 pub fn encode_std(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
 }
+
+pub fn decode_std(s: &str) -> Result<Vec<u8>, Error> {
+    STANDARD.decode(s).map_err(|_| Error::Malformed("base64"))
+}

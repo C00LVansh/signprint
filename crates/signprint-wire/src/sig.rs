@@ -106,8 +106,13 @@ pub fn mac(key: &[u8; 32], base: &str) -> [u8; MAC_LEN] {
 }
 
 pub fn verify_mac(key: &[u8; 32], base: &str, tag: &[u8; MAC_LEN]) -> bool {
+    verify_mac_bytes(key, base.as_bytes(), tag)
+}
+
+/// Constant-time HMAC-SHA256 check over arbitrary bytes.
+pub fn verify_mac_bytes(key: &[u8; 32], data: &[u8], tag: &[u8; MAC_LEN]) -> bool {
     let mut m = Hmac::<Sha256>::new_from_slice(key).expect("any key length works for HMAC");
-    m.update(base.as_bytes());
+    m.update(data);
     m.verify_slice(tag).is_ok()
 }
 
