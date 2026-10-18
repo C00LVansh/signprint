@@ -16,6 +16,7 @@ use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::{PublicKey, SecretKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use signprint_rules::{RuleSet, Signals, Value};
 use signprint_wire::bind::{self, tags_equal};
 use signprint_wire::challenge::{CanvasParams, Challenge, Pow};
 use signprint_wire::keys::KeyRing;
@@ -28,11 +29,16 @@ use crate::store::Store;
 
 pub const ATTEST_DOMAIN: &[u8] = b"signprint/1 attest\n";
 pub const MAX_ATTEST_BODY: usize = 16 * 1024;
+/// Prefixes the client may report. `http.*` and `net.*` come from the proxy.
+const CLIENT_PREFIXES: [&str; 2] = ["js.", "worker."];
+const MAX_SIGNALS: usize = 128;
 
 #[derive(Debug, Clone, Copy)]
 pub struct IssuerConfig {
     pub challenge_ttl_secs: u32,
     pub session_ttl_secs: u32,
+    /// Score upper bounds for bands 0, 1 and 2; anything above is band 3.
+    pub bands: [i32; 3],
 }
 
 impl Default for IssuerConfig {
@@ -40,7 +46,14 @@ impl Default for IssuerConfig {
         Self {
             challenge_ttl_secs: 60,
             session_ttl_secs: 600,
+            bands: [0, 30, 70],
         }
+    }
+}
+
+impl IssuerConfig {
+    pub fn band(&self, score: i32) -> u8 {
+        self.bands.iter().position(|max| score <= *max).unwrap_or(3) as u8
     }
 }
 
@@ -59,6 +72,9 @@ pub struct Issued {
     pub token: String,
     pub expires_at: u64,
     pub band: u8,
+    pub score: i32,
+    /// Ids of the rules that fired, for logging.
+    pub hits: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +112,8 @@ struct AttestBody {
     cid: String,
     client_public: String,
     probe: std::collections::HashMap<String, u64>,
+    #[serde(default)]
+    signals: serde_json::Map<String, serde_json::Value>,
 }
 
 fn random<const N: usize>() -> [u8; N] {
@@ -117,11 +135,29 @@ fn new_ephemeral() -> SecretKey {
 pub struct Issuer {
     ring: KeyRing,
     cfg: IssuerConfig,
+    rules: RuleSet,
+    /// Client-side signals the loaded rules read; everything else is dropped.
+    wanted: Vec<String>,
 }
 
 impl Issuer {
-    pub fn new(ring: KeyRing, cfg: IssuerConfig) -> Self {
-        Self { ring, cfg }
+    pub fn new(ring: KeyRing, cfg: IssuerConfig, rules: RuleSet) -> Self {
+        let wanted = rules
+            .signals()
+            .into_iter()
+            .filter(|s| CLIENT_PREFIXES.iter().any(|p| s.starts_with(p)))
+            .collect();
+        Self {
+            ring,
+            cfg,
+            rules,
+            wanted,
+        }
+    }
+
+    /// Signals the client should collect (sent with the challenge).
+    pub fn wanted_signals(&self) -> &[String] {
+        &self.wanted
     }
 
     fn net_tags(&self, net: &Network) -> (bind::Tag, Option<bind::Tag>) {
@@ -183,12 +219,16 @@ impl Issuer {
         Ok(probe::generate(c.probe_seed, &c.id))
     }
 
+    /// `server_signals` are what the proxy observed itself (`http.*`, `net.*`).
+    /// They override anything the client sent under the same name.
+    #[allow(clippy::too_many_arguments)]
     pub fn attest<S: Store>(
         &self,
         store: &S,
         body: &[u8],
         mac: Option<&str>,
         net: &Network,
+        server_signals: &Signals,
         now: u64,
     ) -> Result<Issued, AttestError> {
         if body.len() > MAX_ATTEST_BODY {
@@ -241,9 +281,20 @@ impl Issuer {
             return Err(AttestError::Rejected);
         }
 
-        // Scoring hooks in here once rule packs land; everything that gets
-        // this far is band 0 for now.
-        let band = 0;
+        if req.signals.len() > MAX_SIGNALS {
+            return Err(AttestError::Malformed);
+        }
+        let mut signals: Signals = req
+            .signals
+            .iter()
+            .filter(|(k, _)| self.wanted.iter().any(|w| w == *k))
+            .map(|(k, v)| (k.clone(), Value::from(v)))
+            .collect();
+        for (k, v) in server_signals {
+            signals.insert(k.clone(), v.clone());
+        }
+        let score = self.rules.score(&signals);
+        let band = self.cfg.band(score.total());
 
         let (bind_net, bind_ja4) = self.net_tags(net);
         let mut flags = Flags::default();
@@ -271,6 +322,8 @@ impl Issuer {
             token: token.seal(&self.ring, random()),
             expires_at: expires_at as u64,
             band,
+            score: score.total(),
+            hits: score.hits.into_iter().map(|h| h.rule).collect(),
         })
     }
 }
@@ -285,9 +338,29 @@ mod tests {
     const NOW: u64 = 1_760_716_800;
 
     fn issuer() -> Issuer {
+        let pack = signprint_rules::Pack::parse(
+            r#"
+            [pack]
+            name = "t"
+            version = "0"
+            license = "Apache-2.0"
+            [[rule]]
+            id = "t.webdriver"
+            family = "artifact"
+            weight = 60
+            when = "js.webdriver == true"
+            [[rule]]
+            id = "t.headless_header"
+            family = "artifact"
+            weight = 70
+            when = 'contains(lower(http.ua), "headless")'
+            "#,
+        )
+        .unwrap();
         Issuer::new(
             KeyRing::new(1, 1, &[(1, [3; 32])]).unwrap(),
             IssuerConfig::default(),
+            RuleSet::new(vec![pack]),
         )
     }
 
@@ -301,6 +374,14 @@ mod tests {
 
     /// Plays the browser: makes a key pair, derives k, answers the probe.
     fn attest_body(offer: &Offer, answer_fix: impl Fn(u32) -> u64) -> (Vec<u8>, String, [u8; 32]) {
+        attest_body_with(offer, answer_fix, serde_json::json!({}))
+    }
+
+    fn attest_body_with(
+        offer: &Offer,
+        answer_fix: impl Fn(u32) -> u64,
+        signals: serde_json::Value,
+    ) -> (Vec<u8>, String, [u8; 32]) {
         let client = new_ephemeral();
         let eph = PublicKey::from_sec1_bytes(&offer.ephemeral_public).unwrap();
         let k: [u8; 32] = p256::ecdh::diffie_hellman(client.to_nonzero_scalar(), eph.as_affine())
@@ -313,6 +394,7 @@ mod tests {
             "cid": offer.cid,
             "client_public": b64::encode_url(client.public_key().to_sec1_point(false).as_bytes()),
             "probe": { program.field: answer_fix(program.answer) },
+            "signals": signals,
         })
         .to_string()
         .into_bytes();
@@ -329,7 +411,7 @@ mod tests {
         let offer = i.challenge(&net(), NOW);
         let (body, mac, k) = attest_body(&offer, |a| a as u64);
         let issued = i
-            .attest(&store, &body, Some(&mac), &net(), NOW + 1)
+            .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW + 1)
             .unwrap();
 
         let token = SessionToken::open(&i.ring, &issued.token).unwrap();
@@ -344,9 +426,12 @@ mod tests {
         let store = MemoryStore::default();
         let offer = i.challenge(&net(), NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
-        assert!(i.attest(&store, &body, Some(&mac), &net(), NOW).is_ok());
+        assert!(
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
+                .is_ok()
+        );
         assert_eq!(
-            i.attest(&store, &body, Some(&mac), &net(), NOW),
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW),
             Err(AttestError::Rejected)
         );
     }
@@ -359,7 +444,7 @@ mod tests {
         let offer = i.challenge(&net(), NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64 + 1);
         assert_eq!(
-            i.attest(&store, &body, Some(&mac), &net(), NOW),
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW),
             Err(AttestError::Rejected)
         );
 
@@ -367,18 +452,18 @@ mod tests {
         let (body, _, _) = attest_body(&offer, |a| a as u64);
         let forged = b64::encode_std(&[0u8; 32]);
         assert_eq!(
-            i.attest(&store, &body, Some(&forged), &net(), NOW),
+            i.attest(&store, &body, Some(&forged), &net(), &Signals::new(), NOW),
             Err(AttestError::Rejected)
         );
         assert_eq!(
-            i.attest(&store, &body, None, &net(), NOW),
+            i.attest(&store, &body, None, &net(), &Signals::new(), NOW),
             Err(AttestError::Rejected)
         );
 
         let offer = i.challenge(&net(), NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         assert_eq!(
-            i.attest(&store, &body, Some(&mac), &net(), NOW + 60),
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW + 60),
             Err(AttestError::Expired)
         );
     }
@@ -392,7 +477,7 @@ mod tests {
         let mut other = net();
         other.ja4n = Some("t13d1715h2_5b57614c22b0_3d5424432f57".into());
         assert_eq!(
-            i.attest(&store, &body, Some(&mac), &other, NOW),
+            i.attest(&store, &body, Some(&mac), &other, &Signals::new(), NOW),
             Err(AttestError::Rejected)
         );
     }
@@ -405,9 +490,67 @@ mod tests {
         n.ja4n = None;
         let offer = i.challenge(&n, NOW);
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
-        let issued = i.attest(&store, &body, Some(&mac), &n, NOW).unwrap();
+        let issued = i
+            .attest(&store, &body, Some(&mac), &n, &Signals::new(), NOW)
+            .unwrap();
         let token = SessionToken::open(&i.ring, &issued.token).unwrap();
         assert!(token.flags.has(Flags::NET_ABSENT));
+    }
+
+    #[test]
+    fn signals_are_scored_into_a_band() {
+        let i = issuer();
+        let store = MemoryStore::default();
+
+        let offer = i.challenge(&net(), NOW);
+        let (body, mac, _) = attest_body(&offer, |a| a as u64);
+        let clean = i
+            .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
+            .unwrap();
+        assert_eq!(clean.band, 0);
+
+        let offer = i.challenge(&net(), NOW);
+        let flagged = serde_json::json!({ "js.webdriver": true });
+        let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged);
+        let issued = i
+            .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
+            .unwrap();
+        assert_eq!((issued.band, issued.score), (2, 60));
+        assert_eq!(issued.hits, ["t.webdriver"]);
+        let token = SessionToken::open(&i.ring, &issued.token).unwrap();
+        assert_eq!(token.band, 2);
+    }
+
+    #[test]
+    fn client_cant_set_server_signals() {
+        let i = issuer();
+        let store = MemoryStore::default();
+        let offer = i.challenge(&net(), NOW);
+        // the client claims a clean http.ua; the proxy's observed value wins
+        let claimed = serde_json::json!({ "http.ua": "Mozilla/5.0 Chrome/141" });
+        let (body, mac, _) = attest_body_with(&offer, |a| a as u64, claimed);
+        let server: Signals = [(
+            "http.ua".to_string(),
+            Value::Str("HeadlessChrome/141".into()),
+        )]
+        .into();
+        let issued = i
+            .attest(&store, &body, Some(&mac), &net(), &server, NOW)
+            .unwrap();
+        assert_eq!(issued.hits, ["t.headless_header"]);
+
+        // only client-side signals the rules read are requested
+        assert_eq!(i.wanted_signals(), ["js.webdriver"]);
+    }
+
+    #[test]
+    fn band_thresholds() {
+        let c = IssuerConfig::default();
+        let bands: Vec<u8> = [-10, 0, 1, 30, 31, 70, 71]
+            .iter()
+            .map(|s| c.band(*s))
+            .collect();
+        assert_eq!(bands, [0, 0, 1, 1, 2, 2, 3]);
     }
 
     #[test]
@@ -415,12 +558,12 @@ mod tests {
         let i = issuer();
         let store = MemoryStore::default();
         assert_eq!(
-            i.attest(&store, b"not json", Some("x"), &net(), NOW),
+            i.attest(&store, b"not json", Some("x"), &net(), &Signals::new(), NOW),
             Err(AttestError::Malformed)
         );
         let big = vec![b' '; MAX_ATTEST_BODY + 1];
         assert_eq!(
-            i.attest(&store, &big, Some("x"), &net(), NOW),
+            i.attest(&store, &big, Some("x"), &net(), &Signals::new(), NOW),
             Err(AttestError::Malformed)
         );
     }

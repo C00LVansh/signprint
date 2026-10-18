@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+signprint-rules = { path = "../signprint-rules" }
 signprint-wire = { path = "../signprint-wire" }
 getrandom = "0.4"
 hkdf.workspace = true
