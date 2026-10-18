@@ -1,0 +1,48 @@
+# Start in observe mode: everything is verified and the upstream gets a
+# verdict header, but nothing is blocked. Switch to "enforce" once the
+# verdicts look right for your real traffic.
+mode = "observe"
+
+[listen]
+tls = "0.0.0.0:443"
+# plain = "127.0.0.1:8080"   # local testing only; no TLS means no JA4
+
+[tls]
+cert = "/etc/signprint/fullchain.pem"
+key = "/etc/signprint/privkey.pem"
+
+[upstream]
+addr = "127.0.0.1:3000"
+# tls = true
+# sni = "app.internal"
+
+[keys]
+# generate with: signprint-proxy keygen
+keyring = "/etc/signprint/keyring.json"
+upstream_secret_env = "SIGNPRINT_UPSTREAM_SECRET"
+log_root_env = "SIGNPRINT_LOG_ROOT"
+
+# Only if signprint sits behind another TLS-terminating proxy that forwards
+# the client's JA4. A CDN in front otherwise replaces the client's TLS
+# fingerprint with its own.
+# [network]
+# trusted_upstreams = ["10.0.0.0/8"]
+# ja4_header = "x-signprint-ja4"
+
+[session]
+skew_secs = 30
+max_requests = 1000
+max_body_bytes = 65536
+
+[[route]]
+path_prefix = "/api/login"
+methods = ["POST"]
+require = "signed"
+
+[[route]]
+path_prefix = "/api/"
+require = "signed"
+
+[[route]]
+path_prefix = "/api/public/"
+require = "none"
