@@ -52,5 +52,8 @@ fn pow_vectors_are_current() {
     let on_disk = std::fs::read_to_string(&path)
         .expect("testvectors/pow.json missing; run with SIGNPRINT_BLESS=1")
         .replace("\r\n", "\n");
-    assert!(on_disk == fresh, "testvectors/pow.json is stale; rerun with SIGNPRINT_BLESS=1");
+    assert!(
+        on_disk == fresh,
+        "testvectors/pow.json is stale; rerun with SIGNPRINT_BLESS=1"
+    );
 }
