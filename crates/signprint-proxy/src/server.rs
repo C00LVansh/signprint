@@ -223,6 +223,8 @@ impl ProxyHttp for Proxy {
             forwarded_ja4: header(req, &self.ja4_header),
             peer_ip,
             ja4n: fp.map(|f| f.ja4n),
+            user_agent: header(req, "user-agent"),
+            sec_ch_ua: header(req, "sec-ch-ua"),
             body: &body,
             body_too_large,
         };
