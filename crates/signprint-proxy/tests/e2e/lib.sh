@@ -20,6 +20,7 @@ start_stack() {
   sed -n '/^{/,/^}/p' "$WORK/keys.txt" > "$WORK/keyring.json"
   export SIGNPRINT_UPSTREAM_SECRET=$(grep '^SIGNPRINT_UPSTREAM_SECRET=' "$WORK/keys.txt" | cut -d= -f2)
   export SIGNPRINT_LOG_ROOT=$(grep '^SIGNPRINT_LOG_ROOT=' "$WORK/keys.txt" | cut -d= -f2)
+  export SIGNPRINT_CALIBRATE=e2e-calibration-token
 
   cat > "$WORK/signprint.toml" <<TOML
 mode = "$mode"
@@ -38,6 +39,12 @@ addr = "127.0.0.1:18080"
 keyring = "$WORK/keyring.json"
 upstream_secret_env = "SIGNPRINT_UPSTREAM_SECRET"
 log_root_env = "SIGNPRINT_LOG_ROOT"
+
+# one calibrated device is enough in tests
+[canvas]
+kb_path = "$WORK/canvas.json"
+min_devices = 1
+calibrate_token_env = "SIGNPRINT_CALIBRATE"
 
 # small puzzles: the CI browsers are automation, so they always step up
 [pow]

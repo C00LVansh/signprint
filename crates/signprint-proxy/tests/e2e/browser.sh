@@ -7,3 +7,9 @@ source "$(dirname "$0")/lib.sh"
 start_stack enforce
 cd "$REPO/client"
 npx playwright test -c playwright.e2e.config.ts
+
+# each engine calibrated itself and then attested again; its canvas answer
+# should have matched its own calibration
+matches=$(grep -c 'core.canvas_match' "$WORK/proxy.log" || true)
+echo "canvas matches after calibration: $matches"
+[ "$matches" -ge 3 ] || fail "expected a calibrated canvas match from each engine"

@@ -132,3 +132,27 @@ test("refresh swaps the key and keeps the session", async ({ page }) => {
   expect(after.verdict).toMatch(/;act=allow;/);
   expect(sidOf(after.verdict)).toBe(sidOf(before.verdict));
 });
+
+test("calibration, then the same engine's answers match", async ({ page }) => {
+  const out = await page.evaluate(async () => {
+    const { SignprintClient } = window as unknown as {
+      SignprintClient: new () => Client & { calibrate(t: string): Promise<{ class: string; added: number }>; reset(): void };
+    };
+    const sp = new SignprintClient();
+    let wrongToken = "";
+    try {
+      await sp.calibrate("not-the-token");
+    } catch (e) {
+      wrongToken = (e as { code?: string }).code ?? String(e);
+    }
+    const cal = await sp.calibrate("e2e-calibration-token");
+    // a fresh session now runs the challenge against the calibrated class
+    sp.reset();
+    const res = await sp.fetch("/api/items");
+    return { wrongToken, cal, status: res.status };
+  });
+  expect(out.wrongToken).toBe("sp_auth");
+  expect(out.cal.added).toBeGreaterThan(0);
+  expect(out.cal.class).toMatch(/^(blink|gecko|webkit)\/\d+\/\w+$/);
+  expect(out.status).toBe(200);
+});
