@@ -20,10 +20,12 @@ use signprint_rules::{RuleSet, Signals, Value};
 use signprint_wire::bind::{self, tags_equal};
 use signprint_wire::challenge::{CanvasParams, Challenge, Pow};
 use signprint_wire::keys::KeyRing;
+use signprint_wire::pow::PowTicket;
 use signprint_wire::token::{Flags, SessionToken};
 use signprint_wire::{b64, sig};
 
 use crate::network::Network;
+use crate::pow::{self, PowParams};
 use crate::probe::{self, Program};
 use crate::store::Store;
 use crate::verify::Verified;
@@ -54,6 +56,35 @@ pub struct IssuerConfig {
     pub absolute_ttl_secs: u32,
     /// Score upper bounds for bands 0, 1 and 2; anything above is band 3.
     pub bands: [i32; 3],
+    /// Proof-of-work step-up for high bands. `None` hands out sessions at
+    /// every band and leaves it to the app.
+    pub pow: Option<PowConfig>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PowConfig {
+    /// Sessions at this band or above have to solve a puzzle first.
+    pub stepup_band: u8,
+    pub memory_kib: u32,
+    pub iterations: u8,
+    pub puzzles: u8,
+    /// Leading zero bits per puzzle for band 2 and for band 3.
+    pub bits: [u8; 2],
+    pub ticket_ttl_secs: u32,
+}
+
+impl Default for PowConfig {
+    fn default() -> Self {
+        // ~1s of browser time for band 2, ~4s for band 3 on a desktop
+        Self {
+            stepup_band: 2,
+            memory_kib: 16 * 1024,
+            iterations: 1,
+            puzzles: 4,
+            bits: [4, 6],
+            ticket_ttl_secs: 300,
+        }
+    }
 }
 
 impl Default for IssuerConfig {
@@ -63,6 +94,7 @@ impl Default for IssuerConfig {
             session_ttl_secs: 600,
             absolute_ttl_secs: 3600,
             bands: [0, 30, 70],
+            pow: Some(PowConfig::default()),
         }
     }
 }
@@ -90,6 +122,24 @@ pub struct Issued {
     pub band: u8,
     pub score: i32,
     /// Ids of the rules that fired, for logging.
+    pub hits: Vec<String>,
+}
+
+/// What a successful attestation turns into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attested {
+    Session(Issued),
+    /// High band: solve this first. The session is sealed inside the ticket.
+    StepUp(StepUp),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepUp {
+    pub ticket: String,
+    pub params: PowParams,
+    pub expires_at: u64,
+    pub band: u8,
+    pub score: i32,
     pub hits: Vec<String>,
 }
 
@@ -296,7 +346,7 @@ impl Issuer {
         net: &Network,
         server_signals: &Signals,
         now: u64,
-    ) -> Result<Issued, AttestError> {
+    ) -> Result<Attested, AttestError> {
         if body.len() > MAX_ATTEST_BODY {
             return Err(AttestError::Malformed);
         }
@@ -368,6 +418,10 @@ impl Issuer {
         if bind_ja4.is_none() {
             flags = flags.with(Flags::NET_ABSENT);
         }
+        let step_up = self.cfg.pow.filter(|p| band >= p.stepup_band);
+        if step_up.is_some() {
+            flags = flags.with(Flags::POW_PASSED);
+        }
         let expires_at = now as u32 + self.cfg.session_ttl_secs;
         let token = SessionToken {
             sid: random(),
@@ -385,12 +439,85 @@ impl Issuer {
             flags,
             policy: 0,
         };
-        Ok(Issued {
+        let issued = Issued {
             token: token.seal(&self.ring, random()),
             expires_at: expires_at as u64,
             band,
             score: score.total(),
             hits: score.hits.into_iter().map(|h| h.rule).collect(),
+        };
+        let Some(cfg) = step_up else {
+            return Ok(Attested::Session(issued));
+        };
+
+        // Difficulty follows the band, give or take a bit at random, so the
+        // puzzle size doesn't spell out the exact score.
+        let base = cfg.bits[(band.saturating_sub(2) as usize).min(1)];
+        let jitter = random::<1>()[0] % 3;
+        let bits = (base + jitter).saturating_sub(1).max(1);
+        let params = PowParams {
+            memory_kib: cfg.memory_kib,
+            iterations: cfg.iterations,
+            puzzles: cfg.puzzles,
+            bits,
+        };
+        let ticket_exp = now as u32 + cfg.ticket_ttl_secs;
+        let ticket = PowTicket {
+            id: random(),
+            issued_at: now as u32,
+            expires_at: ticket_exp,
+            memory_kib: params.memory_kib,
+            iterations: params.iterations,
+            puzzles: params.puzzles,
+            bits: params.bits,
+            token: issued.token,
+        };
+        Ok(Attested::StepUp(StepUp {
+            ticket: ticket.seal(&self.ring, random()),
+            params,
+            expires_at: ticket_exp as u64,
+            band,
+            score: issued.score,
+            hits: issued.hits,
+        }))
+    }
+
+    /// Releases the session sealed in a ticket, given one nonce per puzzle.
+    pub fn redeem<S: Store>(
+        &self,
+        store: &S,
+        ticket: &str,
+        nonces: &[u32],
+        now: u64,
+    ) -> Result<Issued, AttestError> {
+        let t = PowTicket::open(&self.ring, ticket).map_err(|_| AttestError::Rejected)?;
+        if now >= t.expires_at as u64 {
+            return Err(AttestError::Expired);
+        }
+        if nonces.len() != t.puzzles as usize {
+            return Err(AttestError::Malformed);
+        }
+        // spend first: a ticket gets exactly one go, so it can't be used to
+        // make us run Argon2 over and over
+        if !store.spend_challenge(&t.id, t.expires_at as u64, now) {
+            return Err(AttestError::Rejected);
+        }
+        let params = PowParams {
+            memory_kib: t.memory_kib,
+            iterations: t.iterations,
+            puzzles: t.puzzles,
+            bits: t.bits,
+        };
+        if !pow::verify(&params, &t.id, nonces) {
+            return Err(AttestError::Rejected);
+        }
+        let token = SessionToken::open(&self.ring, &t.token).map_err(|_| AttestError::Rejected)?;
+        Ok(Issued {
+            expires_at: token.expires_at as u64,
+            band: token.band,
+            score: 0,
+            hits: Vec::new(),
+            token: t.token,
         })
     }
 
@@ -502,9 +629,21 @@ mod tests {
         .unwrap();
         Issuer::new(
             KeyRing::new(1, 1, &[(1, [3; 32])]).unwrap(),
-            IssuerConfig::default(),
+            IssuerConfig {
+                pow: None,
+                ..IssuerConfig::default()
+            },
             RuleSet::new(vec![pack]),
         )
+    }
+
+    impl Attested {
+        fn session(self) -> Issued {
+            match self {
+                Attested::Session(i) => i,
+                Attested::StepUp(_) => panic!("expected a session, got a step-up"),
+            }
+        }
     }
 
     fn net() -> Network {
@@ -555,7 +694,8 @@ mod tests {
         let (body, mac, k) = attest_body(&offer, |a| a as u64);
         let issued = i
             .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW + 1)
-            .unwrap();
+            .unwrap()
+            .session();
 
         let token = SessionToken::open(&i.ring, &issued.token).unwrap();
         assert_eq!(token.mac_key, k, "session key is the ECDH secret");
@@ -635,7 +775,8 @@ mod tests {
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         let issued = i
             .attest(&store, &body, Some(&mac), &n, &Signals::new(), NOW)
-            .unwrap();
+            .unwrap()
+            .session();
         let token = SessionToken::open(&i.ring, &issued.token).unwrap();
         assert!(token.flags.has(Flags::NET_ABSENT));
     }
@@ -649,7 +790,8 @@ mod tests {
         let (body, mac, _) = attest_body(&offer, |a| a as u64);
         let clean = i
             .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
-            .unwrap();
+            .unwrap()
+            .session();
         assert_eq!(clean.band, 0);
 
         let offer = i.challenge(&net(), NOW);
@@ -657,7 +799,8 @@ mod tests {
         let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged);
         let issued = i
             .attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
-            .unwrap();
+            .unwrap()
+            .session();
         assert_eq!((issued.band, issued.score), (2, 60));
         assert_eq!(issued.hits, ["t.webdriver"]);
         let token = SessionToken::open(&i.ring, &issued.token).unwrap();
@@ -679,7 +822,8 @@ mod tests {
         .into();
         let issued = i
             .attest(&store, &body, Some(&mac), &net(), &server, NOW)
-            .unwrap();
+            .unwrap()
+            .session();
         assert_eq!(issued.hits, ["t.headless_header"]);
 
         // client-side signals the rules read, plus the fingerprint subset
@@ -739,7 +883,8 @@ mod tests {
         let mac = b64::encode_std(&m.finalize().into_bytes());
         (
             i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
-                .unwrap(),
+                .unwrap()
+                .session(),
             client,
         )
     }
@@ -813,6 +958,100 @@ mod tests {
         for k in FINGERPRINT_KEYS {
             assert!(i.wanted_signals().iter().any(|w| w == k), "{k}");
         }
+    }
+
+    #[test]
+    fn high_band_steps_up_through_a_puzzle() {
+        let mut i = issuer();
+        i.cfg.pow = Some(PowConfig {
+            memory_kib: 64, // tiny, keeps the test quick
+            ..PowConfig::default()
+        });
+        let store = MemoryStore::default();
+
+        // clean sessions still go straight through
+        let offer = i.challenge(&net(), NOW);
+        let (body, mac, _) = attest_body(&offer, |a| a as u64);
+        assert!(matches!(
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW),
+            Ok(Attested::Session(_))
+        ));
+
+        let offer = i.challenge(&net(), NOW);
+        let flagged = serde_json::json!({ "js.webdriver": true });
+        let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged);
+        let Ok(Attested::StepUp(up)) =
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
+        else {
+            panic!("band 2 should step up");
+        };
+        assert_eq!(up.band, 2);
+        assert!((3..=5).contains(&up.params.bits));
+
+        // wrong number of nonces is malformed and doesn't burn the ticket
+        assert_eq!(
+            i.redeem(&store, &up.ticket, &[1], NOW),
+            Err(AttestError::Malformed)
+        );
+
+        let id = PowTicket::open(&i.ring, &up.ticket).unwrap().id;
+        let nonces = pow::solve(&up.params, &id);
+        let issued = i.redeem(&store, &up.ticket, &nonces, NOW + 2).unwrap();
+        let token = SessionToken::open(&i.ring, &issued.token).unwrap();
+        assert!(token.flags.has(Flags::POW_PASSED));
+        assert_eq!(token.band, 2);
+
+        // one go per ticket
+        assert_eq!(
+            i.redeem(&store, &up.ticket, &nonces, NOW + 3),
+            Err(AttestError::Rejected)
+        );
+    }
+
+    #[test]
+    fn bad_solution_and_expired_ticket() {
+        let mut i = issuer();
+        i.cfg.pow = Some(PowConfig {
+            memory_kib: 64,
+            ..PowConfig::default()
+        });
+        let store = MemoryStore::default();
+        let flagged = serde_json::json!({ "js.webdriver": true });
+
+        let offer = i.challenge(&net(), NOW);
+        let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged.clone());
+        let Ok(Attested::StepUp(up)) =
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
+        else {
+            panic!()
+        };
+        let id = PowTicket::open(&i.ring, &up.ticket).unwrap().id;
+        let bad: Vec<u32> = (0..up.params.puzzles as u32)
+            .map(|p| {
+                (0u32..)
+                    .find(|n| {
+                        pow::leading_zero_bits(&pow::hash(&up.params, &id, p as u8, *n).unwrap())
+                            < up.params.bits as u32
+                    })
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            i.redeem(&store, &up.ticket, &bad, NOW),
+            Err(AttestError::Rejected)
+        );
+
+        let offer = i.challenge(&net(), NOW);
+        let (body, mac, _) = attest_body_with(&offer, |a| a as u64, flagged);
+        let Ok(Attested::StepUp(up)) =
+            i.attest(&store, &body, Some(&mac), &net(), &Signals::new(), NOW)
+        else {
+            panic!()
+        };
+        assert_eq!(
+            i.redeem(&store, &up.ticket, &[0, 0, 0, 0], NOW + 300),
+            Err(AttestError::Expired)
+        );
     }
 
     #[test]

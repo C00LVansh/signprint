@@ -104,13 +104,13 @@ mod tests {
         let nonces = solve(&P, &id);
         assert!(verify(&P, &id, &nonces));
 
+        // swap in a nonce that definitely isn't a solution for puzzle 1
+        let bad = (0u32..)
+            .find(|n| leading_zero_bits(&hash(&P, &id, 1, *n).unwrap()) < 4)
+            .unwrap();
         let mut wrong = nonces.clone();
-        wrong[1] = wrong[1].wrapping_add(1);
-        // a neighbouring nonce is almost never also a solution
-        assert!(
-            !verify(&P, &id, &wrong)
-                || leading_zero_bits(&hash(&P, &id, 1, wrong[1]).unwrap()) >= 4
-        );
+        wrong[1] = bad;
+        assert!(!verify(&P, &id, &wrong));
 
         assert!(!verify(&P, &id, &nonces[..2]), "too few nonces");
         assert!(!verify(&P, &[8u8; 16], &nonces), "bound to the ticket id");
