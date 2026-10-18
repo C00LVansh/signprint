@@ -20,7 +20,7 @@ use pingora::upstreams::peer::HttpPeer;
 use signprint_core::verdict;
 use signprint_netfp::{Peek as HelloPeek, hello, ja4, ja4n};
 
-use crate::app::{App, Decision, Incoming, WELL_KNOWN, reject_body, whoami_body};
+use crate::app::{App, Decision, Incoming, reject_body};
 use crate::config::Config;
 
 /// JA4 for one connection, attached in the pre-TLS hook and read back per request.
@@ -116,8 +116,17 @@ fn fingerprint(session: &Session) -> Option<ConnFingerprint> {
 }
 
 async fn respond_json(session: &mut Session, status: u16, body: String) -> Result<()> {
+    respond(session, status, "application/json", body).await
+}
+
+async fn respond(
+    session: &mut Session,
+    status: u16,
+    content_type: &str,
+    body: String,
+) -> Result<()> {
     let mut resp = ResponseHeader::build(status, Some(3))?;
-    resp.insert_header("content-type", "application/json")?;
+    resp.insert_header("content-type", content_type)?;
     resp.insert_header("cache-control", "no-store")?;
     resp.insert_header("content-length", body.len().to_string())?;
     session.write_response_header(Box::new(resp), false).await?;
@@ -146,20 +155,35 @@ impl ProxyHttp for Proxy {
         let method = req.method.as_str().to_owned();
         let path = req.uri.path().to_owned();
 
-        if path == format!("{WELL_KNOWN}whoami") && method == "GET" {
+        // Our own endpoints: challenge, probe program, attest, whoami.
+        if let Some(limit) = self.app.well_known_body_limit(&method, &path) {
+            let mut body = Vec::new();
+            if limit > 0 {
+                while let Some(chunk) = session.read_request_body().await? {
+                    if body.len() + chunk.len() > limit {
+                        respond_json(session, 413, reject_body("sp_malformed")).await?;
+                        return Ok(true);
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+            }
+            let req = session.req_header();
             let incoming = Incoming {
+                method: &method,
+                path: &path,
                 peer_ip,
                 ja4n: fp.as_ref().map(|f| f.ja4n.clone()),
                 forwarded_ja4: header(req, &self.ja4_header),
+                body: &body,
                 ..Default::default()
             };
-            let net = self.app.network(&incoming);
-            respond_json(
-                session,
-                200,
-                whoami_body(&net, fp.as_ref().map(|f| f.ja4.as_str())),
-            )
-            .await?;
+            let reply = self.app.well_known(
+                &incoming,
+                header(req, "signprint-attest"),
+                fp.as_ref().map(|f| f.ja4.as_str()),
+                now_secs(),
+            );
+            respond(session, reply.status, reply.content_type, reply.body).await?;
             return Ok(true);
         }
 

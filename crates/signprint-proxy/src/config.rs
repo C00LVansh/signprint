@@ -109,6 +109,10 @@ fn default_ja4_header() -> String {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
+    #[serde(default = "default_ttl")]
+    pub ttl_secs: u32,
+    #[serde(default = "default_challenge_ttl")]
+    pub challenge_ttl_secs: u32,
     #[serde(default = "default_skew")]
     pub skew_secs: u64,
     #[serde(default = "default_max_requests")]
@@ -120,6 +124,8 @@ pub struct Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
+            ttl_secs: default_ttl(),
+            challenge_ttl_secs: default_challenge_ttl(),
             skew_secs: default_skew(),
             max_requests: default_max_requests(),
             max_body_bytes: default_max_body(),
@@ -127,6 +133,12 @@ impl Default for Session {
     }
 }
 
+fn default_ttl() -> u32 {
+    600
+}
+fn default_challenge_ttl() -> u32 {
+    60
+}
 fn default_skew() -> u64 {
     30
 }

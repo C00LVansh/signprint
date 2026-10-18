@@ -3,11 +3,14 @@
 //! collects an [`Incoming`] and carries out the [`Decision`].
 
 use std::net::IpAddr;
+use std::sync::Arc;
 
+use signprint_core::issue::{self, Issuer, IssuerConfig};
 use signprint_core::network::{ForwardedTrusted, Network};
 use signprint_core::store::MemoryStore;
 use signprint_core::verdict::{self, Action, Mode, Verdict};
 use signprint_core::verify::{self, Reject, Verifier};
+use signprint_wire::b64;
 use signprint_wire::keys::KeyRing;
 
 use crate::config::{Config, Require, RouteConfig};
@@ -67,8 +70,36 @@ pub enum Decision {
     Reject { status: u16, code: &'static str },
 }
 
+/// A response we answer ourselves (well-known endpoints).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub status: u16,
+    pub content_type: &'static str,
+    pub body: String,
+}
+
+impl Reply {
+    fn json(status: u16, v: serde_json::Value) -> Self {
+        Self {
+            status,
+            content_type: "application/json",
+            body: v.to_string(),
+        }
+    }
+
+    fn error(status: u16, code: &str) -> Self {
+        Self {
+            status,
+            content_type: "application/json",
+            body: reject_body(code),
+        }
+    }
+}
+
 pub struct App {
-    verifier: Verifier<MemoryStore>,
+    verifier: Verifier<Arc<MemoryStore>>,
+    issuer: Issuer,
+    store: Arc<MemoryStore>,
     routes: Vec<Route>,
     mode: Mode,
     upstream_key: [u8; 32],
@@ -80,10 +111,19 @@ pub struct App {
 impl App {
     pub fn new(cfg: &Config, ring: KeyRing, upstream_key: [u8; 32], log_root: [u8; 32]) -> Self {
         let trusted = cfg.trusted_upstreams();
+        let store = Arc::new(MemoryStore::default());
         Self {
+            issuer: Issuer::new(
+                ring.clone(),
+                IssuerConfig {
+                    challenge_ttl_secs: cfg.session.challenge_ttl_secs,
+                    session_ttl_secs: cfg.session.ttl_secs,
+                },
+            ),
+            store: store.clone(),
             verifier: Verifier::new(
                 ring,
-                MemoryStore::default(),
+                store,
                 verify::Config {
                     skew_secs: cfg.session.skew_secs,
                     max_requests: cfg.session.max_requests,
@@ -109,6 +149,77 @@ impl App {
             match_route(&self.routes, method, path).map(|r| r.require),
             Some(Require::Signed)
         )
+    }
+
+    /// Whether this path is one of ours and how much body it may carry.
+    pub fn well_known_body_limit(&self, method: &str, path: &str) -> Option<usize> {
+        let rest = path.strip_prefix(WELL_KNOWN)?;
+        Some(if method == "POST" && rest == "attest" {
+            issue::MAX_ATTEST_BODY
+        } else {
+            0
+        })
+    }
+
+    /// Handles `/.well-known/signprint/v1/*`. `ja4` is the raw (not
+    /// normalised) JA4, only used by `whoami`.
+    pub fn well_known(
+        &self,
+        req: &Incoming<'_>,
+        attest_mac: Option<&str>,
+        ja4: Option<&str>,
+        now: u64,
+    ) -> Reply {
+        let rest = req.path.strip_prefix(WELL_KNOWN).unwrap_or("");
+        let net = self.network(req);
+        match (req.method, rest) {
+            ("GET", "whoami") => Reply {
+                status: 200,
+                content_type: "application/json",
+                body: whoami_body(&net, ja4),
+            },
+            ("GET", "challenge") => {
+                let offer = self.issuer.challenge(&net, now);
+                Reply::json(
+                    200,
+                    serde_json::json!({
+                        "cid": offer.cid,
+                        "ephemeral_public": b64::encode_url(&offer.ephemeral_public),
+                        "program": format!("{WELL_KNOWN}c/{}.js", offer.cid),
+                        "expires_at": offer.expires_at,
+                        "server_time": now,
+                    }),
+                )
+            }
+            ("GET", r) if r.starts_with("c/") && r.ends_with(".js") => {
+                let cid = &r[2..r.len() - 3];
+                match self.issuer.program(cid, now) {
+                    Ok(p) => Reply {
+                        status: 200,
+                        content_type: "text/javascript",
+                        body: p.source,
+                    },
+                    Err(e) => Reply::error(e.status(), e.code()),
+                }
+            }
+            ("POST", "attest") => {
+                match self
+                    .issuer
+                    .attest(&self.store, req.body, attest_mac, &net, now)
+                {
+                    Ok(issued) => Reply::json(
+                        200,
+                        serde_json::json!({
+                            "token": issued.token,
+                            "expires_at": issued.expires_at,
+                            "server_time": now,
+                        }),
+                    ),
+                    Err(e) => Reply::error(e.status(), e.code()),
+                }
+            }
+            _ => Reply::error(404, "sp_not_found"),
+        }
     }
 
     /// Network evidence for this request, honouring middleware mode.
@@ -384,6 +495,125 @@ mod tests {
             app.decide(&incoming("/api/upload", &h, &body), NOW, 1),
             Decision::Reject { status: 400, .. }
         ));
+    }
+
+    /// The whole thing in-process: challenge, probe, attest, then a signed
+    /// request with the issued session. Plays the browser with p256 + hmac.
+    #[test]
+    fn challenge_attest_then_signed_request() {
+        use hmac::{Hmac, KeyInit, Mac};
+        use p256::elliptic_curve::sec1::ToSec1Point;
+        use sha2::Sha256;
+
+        fn get(path: &str) -> Incoming<'_> {
+            Incoming {
+                method: "GET",
+                authority: "shop.example",
+                https: true,
+                path,
+                peer_ip: Some("192.0.2.9".parse().unwrap()),
+                ..Default::default()
+            }
+        }
+
+        let (app, _) = app("enforce");
+        let peer: IpAddr = "192.0.2.9".parse().unwrap();
+
+        let r = app.well_known(&get("/.well-known/signprint/v1/challenge"), None, None, NOW);
+        assert_eq!(r.status, 200);
+        let offer: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        let cid = offer["cid"].as_str().unwrap();
+
+        // fetch the probe program; the answer is what a browser would compute
+        let r = app.well_known(&get(offer["program"].as_str().unwrap()), None, None, NOW);
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "text/javascript");
+        let probe = app.issuer.program(cid, NOW).unwrap();
+
+        let client = p256::SecretKey::from_slice(&[0x5a; 32]).unwrap();
+        let eph = p256::PublicKey::from_sec1_bytes(
+            &b64::decode_url(offer["ephemeral_public"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let k: [u8; 32] = p256::ecdh::diffie_hellman(client.to_nonzero_scalar(), eph.as_affine())
+            .raw_secret_bytes()
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let body = serde_json::json!({
+            "cid": cid,
+            "client_public": b64::encode_url(client.public_key().to_sec1_point(false).as_bytes()),
+            "probe": { probe.field: probe.answer },
+        })
+        .to_string();
+        let mut m = Hmac::<Sha256>::new_from_slice(&k).unwrap();
+        m.update(issue::ATTEST_DOMAIN);
+        m.update(body.as_bytes());
+        let mac = b64::encode_std(&m.finalize().into_bytes());
+
+        let attest = Incoming {
+            method: "POST",
+            path: "/.well-known/signprint/v1/attest",
+            body: body.as_bytes(),
+            ..get("")
+        };
+        let r = app.well_known(&attest, Some(&mac), None, NOW);
+        assert_eq!(r.status, 200, "{}", r.body);
+        let session: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        let token = session["token"].as_str().unwrap();
+
+        // now a signed request with that token and k
+        let params = sig::Params {
+            created: NOW,
+            keyid: token.into(),
+            nonce: RequestNonce { tab: 7, ctr: 0 },
+        };
+        let digest = digest::content_digest(b"{}");
+        let base = sig::signature_base(
+            &sig::Components {
+                method: "POST",
+                authority: "shop.example",
+                path: "/api/cart",
+                query: "?",
+                content_digest: Some(&digest),
+            },
+            &params,
+        );
+        let (input, signature) = sig::header_values(&params, true, &sig::mac(&k, &base));
+        let req = Incoming {
+            method: "POST",
+            authority: "shop.example",
+            https: true,
+            path: "/api/cart",
+            signature_input: Some(&input),
+            signature: Some(&signature),
+            content_digest: Some(&digest),
+            peer_ip: Some(peer),
+            body: b"{}",
+            ..Default::default()
+        };
+        let v = parse_verdict(&app.decide(&req, NOW, 1), "/api/cart");
+        assert_eq!(v.action, Action::Allow);
+
+        // the same attestation can't be used twice
+        let r = app.well_known(&attest, Some(&mac), None, NOW);
+        assert_eq!(r.status, 401);
+    }
+
+    #[test]
+    fn unknown_well_known_path() {
+        let (app, _) = app("enforce");
+        let req = Incoming {
+            method: "GET",
+            path: "/.well-known/signprint/v1/nope",
+            ..Default::default()
+        };
+        assert_eq!(app.well_known(&req, None, None, NOW).status, 404);
+        assert_eq!(
+            app.well_known_body_limit("POST", "/.well-known/signprint/v1/attest"),
+            Some(16 * 1024)
+        );
+        assert_eq!(app.well_known_body_limit("GET", "/api/x"), None);
     }
 
     #[test]
