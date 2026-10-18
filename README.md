@@ -13,15 +13,15 @@ Reverse-engineering the client doesn't help much, because the key that matters o
 
 ## Status
 
-Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. There's no scoring yet (every correct attestation gets the same treatment) and no canvas challenge.
+Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. Sessions are scored with rule packs and carry a band (0 to 3) into every verdict; there's no canvas challenge or proof-of-work fallback yet.
 
 - [x] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
 - [x] TypeScript signer (`client/`), tested against the same vectors and in Chromium/Firefox/WebKit
 - [x] Pingora proxy: TLS, JA4 capture, signed-request verification, verdict header, observe/enforce
 - [ ] proxy: TLS cert reload, Redis store for multiple instances
 - [x] session issuance: challenge, per-challenge probe program, ECDH attestation, `SignprintClient`
-- [ ] session refresh, mid-session fingerprint re-check, persisting sessions across page loads
-- [ ] scoring with rule packs
+- [x] session refresh with a mid-session fingerprint re-check; sessions persist across page loads
+- [x] scoring with rule packs (`rulepacks/core` is built in)
 - [ ] canvas challenge
 - [ ] Argon2id fallback
 - [ ] demo you can try to break
@@ -29,7 +29,8 @@ Early, but the core loop works: a browser can get a session from the proxy and m
 ## Layout
 
 ```
-crates/        Rust workspace (wire formats, core verification, JA4, proxy)
+crates/        Rust workspace (wire formats, verification, rules, JA4, proxy)
+rulepacks/     the public core rule pack
 client/        browser client (TypeScript)
 testvectors/   shared vectors the Rust and TS sides both test against
 ```
@@ -62,6 +63,18 @@ cp crates/signprint-proxy/signprint.example.toml signprint.toml   # edit paths a
 ```
 
 `GET /.well-known/signprint/v1/whoami` shows the JA4 the proxy sees for your connection, which is a quick way to check nothing in front of it is terminating TLS.
+
+### Scoring
+
+Each attestation is scored by the loaded rule packs and the session gets a band: 0 (clean), 1, 2 or 3. The band is in every verdict, so your app decides what to do with it, e.g. extra verification on login for band 2 and up. The public `core` pack is built in; add your own:
+
+```toml
+[rules]
+packs = ["/etc/signprint/my-rules.toml"]
+bands = [0, 30, 70]   # score upper bounds for bands 0, 1, 2
+```
+
+Rules are a few lines of TOML each; see `rulepacks/core/core.toml` for the format.
 
 Your app receives a `signprint-verdict` header on every proxied request. Check it with `signprint_core::verdict::Verdict::verify` and treat a missing or invalid one as a failure; the app should only be reachable through the proxy.
 
