@@ -151,6 +151,38 @@ fn default_max_body() -> usize {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Rules {
+    /// Load the public core pack that ships inside the binary.
+    #[serde(default = "yes")]
+    pub include_core: bool,
+    /// Extra pack files.
+    #[serde(default)]
+    pub packs: Vec<PathBuf>,
+    /// Score upper bounds for bands 0, 1, 2; above the last is band 3.
+    #[serde(default = "default_bands")]
+    pub bands: [i32; 3],
+}
+
+impl Default for Rules {
+    fn default() -> Self {
+        Self {
+            include_core: true,
+            packs: Vec::new(),
+            bands: default_bands(),
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_bands() -> [i32; 3] {
+    [0, 30, 70]
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub mode: ModeSetting,
@@ -162,6 +194,8 @@ pub struct Config {
     pub network: NetworkConfig,
     #[serde(default)]
     pub session: Session,
+    #[serde(default)]
+    pub rules: Rules,
     #[serde(default, rename = "route")]
     pub routes: Vec<RouteConfig>,
 }
@@ -265,6 +299,27 @@ pub fn secret32(encoded: &str, what: &str) -> Result<[u8; 32], ConfigError> {
         .ok()
         .and_then(|v| v.try_into().ok())
         .ok_or_else(|| ConfigError::Invalid(format!("{what}: expected 32 bytes of base64url")))
+}
+
+pub const CORE_PACK: &str = include_str!("../../../rulepacks/core/core.toml");
+
+/// The core pack (unless disabled) plus any configured pack files.
+pub fn load_rules(cfg: &Rules) -> Result<signprint_rules::RuleSet, ConfigError> {
+    let mut packs = Vec::new();
+    if cfg.include_core {
+        packs.push(
+            signprint_rules::Pack::parse(CORE_PACK)
+                .map_err(|e| ConfigError::Invalid(format!("built-in core pack: {e}")))?,
+        );
+    }
+    for path in &cfg.packs {
+        let text = std::fs::read_to_string(path).map_err(|e| ConfigError::Io(path.clone(), e))?;
+        packs.push(
+            signprint_rules::Pack::parse(&text)
+                .map_err(|e| ConfigError::Invalid(format!("{}: {e}", path.display())))?,
+        );
+    }
+    Ok(signprint_rules::RuleSet::new(packs))
 }
 
 pub fn secret_from_env(var: &str) -> Result<[u8; 32], ConfigError> {

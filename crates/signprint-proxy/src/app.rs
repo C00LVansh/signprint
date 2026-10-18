@@ -10,6 +10,7 @@ use signprint_core::network::{ForwardedTrusted, Network};
 use signprint_core::store::MemoryStore;
 use signprint_core::verdict::{self, Action, Mode, Verdict};
 use signprint_core::verify::{self, Reject, Verifier};
+use signprint_rules::{RuleSet, Signals, Value};
 use signprint_wire::b64;
 use signprint_wire::keys::KeyRing;
 
@@ -59,6 +60,8 @@ pub struct Incoming<'a> {
     pub peer_ip: Option<IpAddr>,
     /// ja4n we computed ourselves from the ClientHello.
     pub ja4n: Option<String>,
+    pub user_agent: Option<&'a str>,
+    pub sec_ch_ua: Option<&'a str>,
     pub body: &'a [u8],
     /// The body went past `max_body` and we stopped reading it.
     pub body_too_large: bool,
@@ -109,7 +112,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cfg: &Config, ring: KeyRing, upstream_key: [u8; 32], log_root: [u8; 32]) -> Self {
+    pub fn new(
+        cfg: &Config,
+        ring: KeyRing,
+        rules: RuleSet,
+        upstream_key: [u8; 32],
+        log_root: [u8; 32],
+    ) -> Self {
         let trusted = cfg.trusted_upstreams();
         let store = Arc::new(MemoryStore::default());
         Self {
@@ -118,7 +127,9 @@ impl App {
                 IssuerConfig {
                     challenge_ttl_secs: cfg.session.challenge_ttl_secs,
                     session_ttl_secs: cfg.session.ttl_secs,
+                    bands: cfg.rules.bands,
                 },
+                rules,
             ),
             store: store.clone(),
             verifier: Verifier::new(
@@ -187,6 +198,7 @@ impl App {
                         "probe_key": offer.probe_key,
                         "ephemeral_public": b64::encode_url(&offer.ephemeral_public),
                         "program": format!("{WELL_KNOWN}c/{}.js", offer.cid),
+                        "signals": self.issuer.wanted_signals(),
                         "expires_at": offer.expires_at,
                         "server_time": now,
                     }),
@@ -204,18 +216,27 @@ impl App {
                 }
             }
             ("POST", "attest") => {
+                let server = server_signals(req, &net);
                 match self
                     .issuer
-                    .attest(&self.store, req.body, attest_mac, &net, now)
+                    .attest(&self.store, req.body, attest_mac, &net, &server, now)
                 {
-                    Ok(issued) => Reply::json(
-                        200,
-                        serde_json::json!({
-                            "token": issued.token,
-                            "expires_at": issued.expires_at,
-                            "server_time": now,
-                        }),
-                    ),
+                    Ok(issued) => {
+                        log::info!(
+                            "session issued: band {} score {} rules [{}]",
+                            issued.band,
+                            issued.score,
+                            issued.hits.join(", ")
+                        );
+                        Reply::json(
+                            200,
+                            serde_json::json!({
+                                "token": issued.token,
+                                "expires_at": issued.expires_at,
+                                "server_time": now,
+                            }),
+                        )
+                    }
                     Err(e) => Reply::error(e.status(), e.code()),
                 }
             }
@@ -296,6 +317,21 @@ impl App {
     }
 }
 
+/// What the proxy saw itself. These always win over anything the client
+/// reports under the same name.
+fn server_signals(req: &Incoming<'_>, net: &Network) -> Signals {
+    let mut s = Signals::new();
+    if let Some(ua) = req.user_agent {
+        s.insert("http.ua".into(), Value::Str(ua.into()));
+    }
+    if let Some(ch) = req.sec_ch_ua {
+        s.insert("http.sec_ch_ua".into(), Value::Str(ch.into()));
+    }
+    let provenance = format!("{:?}", net.provenance).to_lowercase();
+    s.insert("net.provenance".into(), Value::Str(provenance));
+    s
+}
+
 /// Body for rejected requests. Fixed and minimal on purpose.
 pub fn reject_body(code: &str) -> String {
     format!("{{\"error\":\"{code}\"}}")
@@ -370,7 +406,11 @@ mod tests {
             policy: 0,
         }
         .seal(&ring, [0; 24]);
-        (App::new(&config(mode), ring, UPSTREAM, [5; 32]), token)
+        let rules = crate::config::load_rules(&Default::default()).unwrap();
+        (
+            App::new(&config(mode), ring, rules, UPSTREAM, [5; 32]),
+            token,
+        )
     }
 
     fn signed_headers(token: &str, path: &str, body: &[u8]) -> (String, String, Option<String>) {

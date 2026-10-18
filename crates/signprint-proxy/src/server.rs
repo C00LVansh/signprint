@@ -174,6 +174,8 @@ impl ProxyHttp for Proxy {
                 peer_ip,
                 ja4n: fp.as_ref().map(|f| f.ja4n.clone()),
                 forwarded_ja4: header(req, &self.ja4_header),
+                user_agent: header(req, "user-agent"),
+                sec_ch_ua: header(req, "sec-ch-ua"),
                 body: &body,
                 ..Default::default()
             };

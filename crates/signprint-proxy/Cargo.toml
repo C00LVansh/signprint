@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 signprint-core = { path = "../signprint-core" }
 signprint-netfp = { path = "../signprint-netfp" }
+signprint-rules = { path = "../signprint-rules" }
 signprint-wire = { path = "../signprint-wire" }
 getrandom = "0.4"
 log = "0.4"

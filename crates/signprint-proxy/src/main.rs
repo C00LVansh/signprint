@@ -43,7 +43,8 @@ fn load(path: &str) -> Result<(config::Config, app::App), config::ConfigError> {
     let ring = config::load_keyring(&cfg.keys.keyring)?;
     let upstream = config::secret_from_env(&cfg.keys.upstream_secret_env)?;
     let log_root = config::secret_from_env(&cfg.keys.log_root_env)?;
-    let app = app::App::new(&cfg, ring, upstream, log_root);
+    let rules = config::load_rules(&cfg.rules)?;
+    let app = app::App::new(&cfg, ring, rules, upstream, log_root);
     Ok((cfg, app))
 }
 
