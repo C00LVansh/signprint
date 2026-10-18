@@ -1,0 +1,146 @@
+# signprint core rule pack
+#
+# Generic checks that are already well known and published elsewhere
+# (BotD, CreepJS, Cap). They catch default automation and sloppy spoofing.
+# Anything tuned against a specific tool belongs in a separately distributed
+# pack, not here.
+#
+# Weights add up per session; the proxy maps the total to a band:
+#   <= 0 clean, <= 30 low, <= 70 elevated, > 70 high.
+
+[pack]
+name = "core"
+version = "1.0.0"
+license = "Apache-2.0"
+
+# --- automation artifacts ---------------------------------------------------
+
+[[rule]]
+id = "core.webdriver"
+family = "artifact"
+weight = 60
+when = "js.webdriver == true"
+note = "navigator.webdriver is true (set by WebDriver and CDP-driven browsers)"
+
+[[rule]]
+id = "core.webdriver_removed"
+family = "artifact"
+weight = 40
+when = 'js.engine == "blink" && js.webdriver_type == "undefined"'
+note = "Chromium always defines navigator.webdriver; undefined means something deleted it"
+
+[[rule]]
+id = "core.headless_ua"
+family = "artifact"
+weight = 70
+when = 'contains(lower(js.ua), "headless") || contains(lower(http.ua), "headless") || contains(lower(worker.ua), "headless")'
+note = "HeadlessChrome token in a user agent"
+
+[[rule]]
+id = "core.headless_brand"
+family = "artifact"
+weight = 70
+when = 'contains(lower(js.uad_brands), "headless")'
+note = "HeadlessChrome in navigator.userAgentData brands"
+
+[[rule]]
+id = "core.software_renderer"
+family = "artifact"
+weight = 35
+when = 'contains(lower(js.webgl_renderer), "swiftshader") || contains(lower(js.webgl_renderer), "llvmpipe") || contains(lower(js.webgl_renderer), "mesa offscreen")'
+note = "software WebGL renderer, typical of headless and VM setups"
+
+[[rule]]
+id = "core.no_languages"
+family = "artifact"
+weight = 30
+when = "js.languages_len == 0"
+note = "navigator.languages is empty"
+
+[[rule]]
+id = "core.zero_window"
+family = "artifact"
+weight = 25
+when = "js.outer_w == 0 && js.outer_h == 0 && js.has_focus == true"
+note = "focused document whose window has no outer size"
+
+# --- tampering --------------------------------------------------------------
+
+[[rule]]
+id = "core.patched_natives"
+family = "consistency"
+weight = 35
+when = "js.lies > 0"
+note = "built-in getters or functions don't look native (toString/prototype checks)"
+
+# --- consistency between what the browser claims ----------------------------
+
+[[rule]]
+id = "core.ua_header_mismatch"
+family = "consistency"
+weight = 35
+when = "has(js.ua) && has(http.ua) && js.ua != http.ua"
+note = "navigator.userAgent differs from the User-Agent header"
+
+[[rule]]
+id = "core.worker_ua_mismatch"
+family = "consistency"
+weight = 45
+when = "has(worker.ua) && worker.ua != js.ua"
+note = "a Web Worker sees a different user agent than the page"
+
+[[rule]]
+id = "core.worker_platform_mismatch"
+family = "consistency"
+weight = 30
+when = "has(worker.platform) && worker.platform != js.platform"
+note = "a Web Worker sees a different platform than the page"
+
+[[rule]]
+id = "core.worker_cores_mismatch"
+family = "consistency"
+weight = 30
+when = "has(worker.hw_concurrency) && worker.hw_concurrency != js.hw_concurrency"
+note = "a Web Worker sees a different hardwareConcurrency than the page"
+
+[[rule]]
+id = "core.gecko_claims_chrome"
+family = "consistency"
+weight = 40
+when = 'js.engine == "gecko" && contains(js.ua, "Chrome/")'
+note = "Firefox engine features with a Chrome user agent"
+
+[[rule]]
+id = "core.blink_claims_firefox"
+family = "consistency"
+weight = 40
+when = 'js.engine == "blink" && contains(js.ua, "Firefox/")'
+note = "Chromium engine features with a Firefox user agent"
+
+[[rule]]
+id = "core.chrome_without_chrome_object"
+family = "consistency"
+weight = 20
+when = 'js.engine == "blink" && contains(js.ua, "Chrome/") && js.chrome_present == false'
+note = "claims Chrome but window.chrome is missing"
+
+[[rule]]
+id = "core.no_client_hints"
+family = "consistency"
+weight = 20
+when = 'js.engine == "blink" && contains(js.ua, "Chrome/") && !has(http.sec_ch_ua)'
+note = "Chromium over HTTPS sends Sec-CH-UA by default"
+
+[[rule]]
+id = "core.no_plugins_desktop_chrome"
+family = "consistency"
+weight = 15
+when = 'js.engine == "blink" && js.uad_mobile == false && js.plugins_len == 0'
+note = "desktop Chrome ships the built-in PDF viewer plugins"
+
+[[rule]]
+id = "core.notification_contradiction"
+family = "consistency"
+weight = 30
+when = 'js.notification_permission == "denied" && js.perm_notifications == "prompt"'
+note = "Notification.permission and the Permissions API disagree (old headless bug)"
