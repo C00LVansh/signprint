@@ -160,7 +160,7 @@ note = "renders exactly like a different, calibrated device class than it claims
 id = "core.canvas_unknown_answer"
 family = "challenge"
 weight = 15
-when = "cnv.match == false && cnv.class_lie != true"
+when = "cnv.match == false && !has(cnv.class_lie)"
 note = "answer not seen from this calibrated class (could also be a new driver)"
 
 [[rule]]

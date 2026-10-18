@@ -126,3 +126,36 @@ fn spoofed_ua_in_page_only_is_caught() {
 fn missing_signals_dont_score() {
     assert_eq!(core().score(&Signals::new()).total(), 0);
 }
+
+fn hits(sig: &Signals) -> Vec<String> {
+    core().score(sig).hits.into_iter().map(|h| h.rule).collect()
+}
+
+#[test]
+fn canvas_rules() {
+    let mut sig = desktop_chrome();
+    sig.insert("cnv.present".into(), Value::Bool(true));
+    sig.insert("cnv.noise".into(), s("exact"));
+
+    let mut m = sig.clone();
+    m.insert("cnv.match".into(), Value::Bool(true));
+    assert_eq!(hits(&m), ["core.canvas_match"]);
+
+    let mut unknown = sig.clone();
+    unknown.insert("cnv.match".into(), Value::Bool(false));
+    assert_eq!(hits(&unknown), ["core.canvas_unknown_answer"]);
+
+    let mut lie = unknown.clone();
+    lie.insert("cnv.class_lie".into(), Value::Bool(true));
+    assert_eq!(hits(&lie), ["core.canvas_class_lie"]);
+
+    let mut noisy = sig.clone();
+    noisy.insert("cnv.noise".into(), s("noise"));
+    assert_eq!(hits(&noisy), ["core.canvas_noise_unexplained"]);
+    noisy.insert("js.uad_brands".into(), s("Brave/141, Chromium/141"));
+    assert!(hits(&noisy).is_empty(), "Brave adds noise on purpose");
+
+    let mut skipped = desktop_chrome();
+    skipped.insert("cnv.present".into(), Value::Bool(false));
+    assert_eq!(hits(&skipped), ["core.canvas_skipped"]);
+}
