@@ -13,13 +13,15 @@ Reverse-engineering the client doesn't help much, because the key that matters o
 
 ## Status
 
-Early. The wire format, the TS signer and the proxy's verification path work and are tested end to end, but there's no session issuance yet, so nothing can actually get a session. That's next.
+Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. There's no scoring yet (every correct attestation gets the same treatment) and no canvas challenge.
 
 - [x] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
 - [x] TypeScript signer (`client/`), tested against the same vectors and in Chromium/Firefox/WebKit
 - [x] Pingora proxy: TLS, JA4 capture, signed-request verification, verdict header, observe/enforce
 - [ ] proxy: TLS cert reload, Redis store for multiple instances
-- [ ] session issuance + scoring
+- [x] session issuance: challenge, per-challenge probe program, ECDH attestation, `SignprintClient`
+- [ ] session refresh, mid-session fingerprint re-check, persisting sessions across page loads
+- [ ] scoring with rule packs
 - [ ] canvas challenge
 - [ ] Argon2id fallback
 - [ ] demo you can try to break
@@ -31,6 +33,21 @@ crates/        Rust workspace (wire formats, core verification, JA4, proxy)
 client/        browser client (TypeScript)
 testvectors/   shared vectors the Rust and TS sides both test against
 ```
+
+## Using it from the browser
+
+```js
+import { SignprintClient } from "@signprint/client";
+
+const sp = new SignprintClient();
+const res = await sp.fetch("/api/cart", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ qty: 1 }),
+});
+```
+
+The first protected call runs the challenge (or call `sp.ready()` yourself, e.g. when a login form gets focus). After that, requests are signed with the session key.
 
 ## Running the proxy
 
