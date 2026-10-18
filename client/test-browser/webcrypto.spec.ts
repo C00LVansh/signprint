@@ -11,7 +11,7 @@ test.beforeEach(async ({ page }) => {
 
 test("session key matches the server and can't be exported", async ({ page }) => {
   const results = await page.evaluate(async () => {
-    const lib = "/dist/index.js";
+    const lib = "/dist/signprint.js";
     const { deriveSessionKey, mac } = await import(lib);
     const vectors = await (await fetch("/testvectors/wire.json")).json();
     const fromB64Url = (s: string) =>
@@ -43,7 +43,7 @@ test("session key matches the server and can't be exported", async ({ page }) =>
 
 test("keys survive IndexedDB when stored as separate records", async ({ page }) => {
   const stored = await page.evaluate(async () => {
-    const lib = "/dist/index.js";
+    const lib = "/dist/signprint.js";
     const { deriveSessionKey, exportPublicKey, generateClientKey, mac } = await import(lib);
     const vectors = await (await fetch("/testvectors/wire.json")).json();
     const serverPub = Uint8Array.from(

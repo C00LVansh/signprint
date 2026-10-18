@@ -23,7 +23,7 @@ const ALL = [
 test("collector reads a consistent, unpatched browser", async ({ page, browserName }) => {
   await page.goto("/blank.html");
   const s = await page.evaluate(async (wanted) => {
-    const lib = "/dist/index.js";
+    const lib = "/dist/signprint.js";
     const { collectSignals } = await import(lib);
     return collectSignals(wanted);
   }, ALL);
@@ -45,7 +45,7 @@ test("a page-level navigator patch shows up as a lie", async ({ page }) => {
     // roughly what a JS-injection stealth plugin does
     Object.defineProperty(Navigator.prototype, "webdriver", { get: () => false, configurable: true });
     Object.defineProperty(navigator, "userAgent", { get: () => "Mozilla/5.0 Totally Real", configurable: true });
-    const lib = "/dist/index.js";
+    const lib = "/dist/signprint.js";
     const { collectSignals } = await import(lib);
     return collectSignals(["js.lies", "js.ua", "worker.ua", "js.webdriver"]);
   });
