@@ -172,3 +172,84 @@ export async function challenge(seed: number, rounds: number, size: number): Pro
   }
   return toBase64Url(acc.slice(0, 16));
 }
+
+const GL_VERTEX = `
+attribute vec2 a_pos;
+attribute vec3 a_col;
+varying vec3 v_col;
+varying vec2 v_pos;
+void main() {
+  v_col = a_col;
+  v_pos = a_pos;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+// The classic sin-hash: tiny float precision differences between GPUs and
+// drivers get amplified into visibly different pixels.
+const GL_FRAGMENT = `
+precision mediump float;
+varying vec3 v_col;
+varying vec2 v_pos;
+uniform float u_k;
+void main() {
+  float n = fract(sin(dot(v_pos * u_k, vec2(12.9898, 78.233))) * 43758.5453);
+  vec3 c = v_col * (0.6 + 0.4 * n) + 0.15 * vec3(sin(v_pos.x * u_k), cos(v_pos.y * u_k), exp(-abs(v_pos.x)));
+  gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+
+/**
+ * WebGL counterpart of challenge(): seeded triangles through a shader that
+ * magnifies GPU/driver float differences. Null when WebGL isn't available.
+ */
+export async function webglChallenge(seed: number, size = 128): Promise<string | null> {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true, antialias: false });
+  if (!gl) return null;
+
+  const compile = (type: number, src: string) => {
+    const sh = gl.createShader(type)!;
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    return sh;
+  };
+  const prog = gl.createProgram()!;
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, GL_VERTEX));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, GL_FRAGMENT));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+  gl.useProgram(prog);
+
+  const r = new Rng((seed ^ 0x676c6c21) >>> 0); // "gll!"
+  const triangles = 6;
+  const data = new Float32Array(triangles * 3 * 5);
+  for (let i = 0; i < triangles * 3; i++) {
+    data[i * 5] = r.range(0, 2000) / 1000 - 1;
+    data[i * 5 + 1] = r.range(0, 2000) / 1000 - 1;
+    data[i * 5 + 2] = r.range(0, 1000) / 1000;
+    data[i * 5 + 3] = r.range(0, 1000) / 1000;
+    data[i * 5 + 4] = r.range(0, 1000) / 1000;
+  }
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  const pos = gl.getAttribLocation(prog, "a_pos");
+  const col = gl.getAttribLocation(prog, "a_col");
+  gl.enableVertexAttribArray(pos);
+  gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(col);
+  gl.vertexAttribPointer(col, 3, gl.FLOAT, false, 20, 8);
+  gl.uniform1f(gl.getUniformLocation(prog, "u_k"), r.range(100, 9000) / 100);
+
+  gl.viewport(0, 0, size, size);
+  gl.clearColor(r.range(0, 255) / 255, r.range(0, 255) / 255, r.range(0, 255) / 255, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLES, 0, triangles * 3);
+
+  const px = new Uint8Array(size * size * 4);
+  gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", px));
+  gl.getExtension("WEBGL_lose_context")?.loseContext();
+  return toBase64Url(digest.slice(0, 16));
+}

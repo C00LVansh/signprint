@@ -381,25 +381,38 @@ impl App {
         struct Run {
             device: String,
             answers: Vec<(u32, String)>,
+            #[serde(default)]
+            webgl: Vec<(u32, String)>,
+            #[serde(default)]
+            renderer: Option<String>,
         }
         let Ok(run) = serde_json::from_slice::<Run>(req.body) else {
             return Reply::error(400, "sp_malformed");
         };
+        let too_long = |v: &[(u32, String)]| v.iter().any(|(_, a)| a.len() > 64);
         if run.device.is_empty()
             || run.device.len() > 64
-            || run.answers.iter().any(|(_, a)| a.len() > 64)
+            || too_long(&run.answers)
+            || too_long(&run.webgl)
+            || run.renderer.as_ref().is_some_and(|r| r.len() > 512)
         {
             return Reply::error(400, "sp_malformed");
         }
         match canvas.calibrate(req.user_agent.unwrap_or(""), &run.device, &run.answers) {
             Ok((class, added)) => {
+                let gl_added = match (&run.renderer, run.webgl.is_empty()) {
+                    (Some(r), false) => canvas
+                        .calibrate_gpu(r, &run.device, &run.webgl)
+                        .unwrap_or(0),
+                    _ => 0,
+                };
                 log::info!(
-                    "calibration: {class} from device {} added {added} answers",
+                    "calibration: {class} from device {} added {added} canvas and {gl_added} webgl answers",
                     run.device
                 );
                 Reply::json(
                     200,
-                    serde_json::json!({ "class": class.to_string(), "added": added }),
+                    serde_json::json!({ "class": class.to_string(), "added": added, "webgl_added": gl_added }),
                 )
             }
             Err(e) => {

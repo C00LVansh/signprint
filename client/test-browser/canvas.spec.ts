@@ -58,3 +58,16 @@ test("content-seeded noise is invisible to render-twice but caught by the patter
   expect(out.first).toBe(out.second); // rendering twice sees nothing wrong
   expect(out.first).not.toBe(out.want); // the known answer does
 });
+
+test("webgl challenge is stable within a browser", async ({ page }) => {
+  await page.goto("/blank.html");
+  const out = await page.evaluate(async () => {
+    const lib = "/dist/signprint.js";
+    const { webglChallenge } = await import(lib);
+    return { a: await webglChallenge(777), b: await webglChallenge(777), c: await webglChallenge(778) };
+  });
+  test.info().annotations.push({ type: "webgl", description: JSON.stringify(out) });
+  if (out.a === null) return; // no WebGL in this engine/environment; that's allowed
+  expect(out.a).toBe(out.b);
+  expect(out.a).not.toBe(out.c);
+});

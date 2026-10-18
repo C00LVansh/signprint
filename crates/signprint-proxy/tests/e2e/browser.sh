@@ -13,3 +13,9 @@ npx playwright test -c playwright.e2e.config.ts
 matches=$(grep -c 'core.canvas_match' "$WORK/proxy.log" || true)
 echo "canvas matches after calibration: $matches"
 [ "$matches" -ge 3 ] || fail "expected a calibrated canvas match from each engine"
+
+# WebGL is judged against the GPU each browser reports; at least one engine
+# in CI has working WebGL
+gl=$(grep -c 'core.webgl_match' "$WORK/proxy.log" || true)
+echo "webgl matches after calibration: $gl"
+[ "$gl" -ge 1 ] || fail "expected a calibrated webgl match"
