@@ -2350,6 +2350,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "signprint-canvas"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "signprint-core"
 version = "0.0.1"
 dependencies = [
