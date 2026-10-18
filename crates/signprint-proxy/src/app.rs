@@ -365,7 +365,12 @@ impl App {
         if req.method == "GET" {
             return Reply::json(
                 200,
-                serde_json::json!({ "seeds": canvas.pool(), "classes": canvas.summary() }),
+                serde_json::json!({
+                    "seeds": canvas.pool(),
+                    "rounds": canvas.shape().0,
+                    "size": canvas.shape().1,
+                    "classes": canvas.summary(),
+                }),
             );
         }
 

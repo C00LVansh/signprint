@@ -151,6 +151,11 @@ impl Canvas {
         s
     }
 
+    /// Rounds and canvas size every task uses; calibration has to match.
+    pub fn shape(&self) -> (u8, u16) {
+        (self.cfg.rounds, self.cfg.size)
+    }
+
     pub fn pool(&self) -> Vec<u32> {
         self.read().pool().to_vec()
     }
