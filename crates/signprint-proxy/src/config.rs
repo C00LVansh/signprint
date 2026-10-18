@@ -113,6 +113,9 @@ pub struct Session {
     pub ttl_secs: u32,
     #[serde(default = "default_challenge_ttl")]
     pub challenge_ttl_secs: u32,
+    /// A session can be refreshed until it's this old, then it re-attests.
+    #[serde(default = "default_absolute_ttl")]
+    pub absolute_ttl_secs: u32,
     #[serde(default = "default_skew")]
     pub skew_secs: u64,
     #[serde(default = "default_max_requests")]
@@ -126,6 +129,7 @@ impl Default for Session {
         Self {
             ttl_secs: default_ttl(),
             challenge_ttl_secs: default_challenge_ttl(),
+            absolute_ttl_secs: default_absolute_ttl(),
             skew_secs: default_skew(),
             max_requests: default_max_requests(),
             max_body_bytes: default_max_body(),
@@ -138,6 +142,9 @@ fn default_ttl() -> u32 {
 }
 fn default_challenge_ttl() -> u32 {
     60
+}
+fn default_absolute_ttl() -> u32 {
+    3600
 }
 fn default_skew() -> u64 {
     30

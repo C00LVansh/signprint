@@ -127,6 +127,7 @@ impl App {
                 IssuerConfig {
                     challenge_ttl_secs: cfg.session.challenge_ttl_secs,
                     session_ttl_secs: cfg.session.ttl_secs,
+                    absolute_ttl_secs: cfg.session.absolute_ttl_secs,
                     bands: cfg.rules.bands,
                 },
                 rules,
@@ -165,11 +166,13 @@ impl App {
     /// Whether this path is one of ours and how much body it may carry.
     pub fn well_known_body_limit(&self, method: &str, path: &str) -> Option<usize> {
         let rest = path.strip_prefix(WELL_KNOWN)?;
-        Some(if method == "POST" && rest == "attest" {
-            issue::MAX_ATTEST_BODY
-        } else {
-            0
-        })
+        Some(
+            if method == "POST" && (rest == "attest" || rest == "refresh") {
+                issue::MAX_ATTEST_BODY
+            } else {
+                0
+            },
+        )
     }
 
     /// Handles `/.well-known/signprint/v1/*`. `ja4` is the raw (not
@@ -237,6 +240,35 @@ impl App {
                             }),
                         )
                     }
+                    Err(e) => Reply::error(e.status(), e.code()),
+                }
+            }
+            ("POST", "refresh") => {
+                let vreq = verify::Request {
+                    method: req.method,
+                    authority: req.authority,
+                    https: req.https,
+                    path: req.path,
+                    query: req.query,
+                    signature_input: req.signature_input,
+                    signature: req.signature,
+                    content_digest: req.content_digest,
+                    body: req.body,
+                };
+                let verified = match self.verifier.verify_with(&vreq, &net, now, false) {
+                    Ok(v) => v,
+                    Err(r) => return Reply::error(r.status(), r.code()),
+                };
+                match self.issuer.refresh(&verified, req.body, &net, now) {
+                    Ok(r) => Reply::json(
+                        200,
+                        serde_json::json!({
+                            "token": r.token,
+                            "ephemeral_public": b64::encode_url(&r.ephemeral_public),
+                            "expires_at": r.expires_at,
+                            "server_time": now,
+                        }),
+                    ),
                     Err(e) => Reply::error(e.status(), e.code()),
                 }
             }
@@ -639,6 +671,99 @@ mod tests {
         // the same attestation can't be used twice
         let r = app.well_known(&attest, Some(&mac), None, NOW);
         assert_eq!(r.status, 401);
+
+        // refresh: a signed request to the refresh endpoint, from a new network
+        let refresh_body = serde_json::json!({
+            "client_public": b64::encode_url(client.public_key().to_sec1_point(false).as_bytes()),
+            "fp": {},
+        })
+        .to_string();
+        let refresh_path = "/.well-known/signprint/v1/refresh";
+        let digest = digest::content_digest(refresh_body.as_bytes());
+        let params = sig::Params {
+            created: NOW + 100,
+            keyid: token.into(),
+            nonce: RequestNonce { tab: 7, ctr: 1 },
+        };
+        let base = sig::signature_base(
+            &sig::Components {
+                method: "POST",
+                authority: "shop.example",
+                path: refresh_path,
+                query: "?",
+                content_digest: Some(&digest),
+            },
+            &params,
+        );
+        let (input, signature) = sig::header_values(&params, true, &sig::mac(&k, &base));
+        let moved: IpAddr = "198.51.100.77".parse().unwrap();
+        let refresh = Incoming {
+            method: "POST",
+            authority: "shop.example",
+            https: true,
+            path: refresh_path,
+            signature_input: Some(&input),
+            signature: Some(&signature),
+            content_digest: Some(&digest),
+            peer_ip: Some(moved),
+            body: refresh_body.as_bytes(),
+            ..Default::default()
+        };
+        let r = app.well_known(&refresh, None, None, NOW + 100);
+        assert_eq!(r.status, 200, "{}", r.body);
+        let refreshed: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        let eph2 = p256::PublicKey::from_sec1_bytes(
+            &b64::decode_url(refreshed["ephemeral_public"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let k2: [u8; 32] = p256::ecdh::diffie_hellman(client.to_nonzero_scalar(), eph2.as_affine())
+            .raw_secret_bytes()
+            .as_slice()
+            .try_into()
+            .unwrap();
+        assert_ne!(k2, k);
+
+        // the refreshed session is bound to the new network and signs with k2
+        let token2 = refreshed["token"].as_str().unwrap();
+        let params = sig::Params {
+            created: NOW + 101,
+            keyid: token2.into(),
+            nonce: RequestNonce { tab: 7, ctr: 2 },
+        };
+        let base = sig::signature_base(
+            &sig::Components {
+                method: "GET",
+                authority: "shop.example",
+                path: "/api/items",
+                query: "?",
+                content_digest: None,
+            },
+            &params,
+        );
+        let (input, signature) = sig::header_values(&params, false, &sig::mac(&k2, &base));
+        let req = Incoming {
+            method: "GET",
+            authority: "shop.example",
+            https: true,
+            path: "/api/items",
+            signature_input: Some(&input),
+            signature: Some(&signature),
+            peer_ip: Some(moved),
+            ..Default::default()
+        };
+        let d = app.decide(&req, NOW + 101, 2);
+        let Decision::Forward { verdict } = d else {
+            panic!("expected forward, got {d:?}")
+        };
+        let v = Verdict::verify(
+            Some(&verdict),
+            &UPSTREAM,
+            &verdict::request_hash("GET", "shop.example", "/api/items", None),
+            NOW + 101,
+            5,
+        )
+        .unwrap();
+        assert_eq!(v.action, Action::Allow);
     }
 
     #[test]

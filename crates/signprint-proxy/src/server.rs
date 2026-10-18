@@ -168,9 +168,21 @@ impl ProxyHttp for Proxy {
                 }
             }
             let req = session.req_header();
+            let authority = req
+                .uri
+                .authority()
+                .map(|a| a.as_str())
+                .or_else(|| header(req, "host"))
+                .unwrap_or("");
             let incoming = Incoming {
                 method: &method,
                 path: &path,
+                authority,
+                https,
+                query: req.uri.query(),
+                signature_input: header(req, "signature-input"),
+                signature: header(req, "signature"),
+                content_digest: header(req, "content-digest"),
                 peer_ip,
                 ja4n: fp.as_ref().map(|f| f.ja4n.clone()),
                 forwarded_ja4: header(req, &self.ja4_header),
