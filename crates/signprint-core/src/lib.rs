@@ -4,6 +4,7 @@
 //! layers over this.
 
 pub mod network;
+pub mod probe;
 pub mod store;
 pub mod verdict;
 pub mod verify;
