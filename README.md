@@ -13,7 +13,7 @@ Reverse-engineering the client doesn't help much, because the key that matters o
 
 ## Status
 
-Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. Sessions are scored with rule packs and carry a band (0 to 3) into every verdict; there's no canvas challenge or proof-of-work fallback yet.
+Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. Sessions are scored with rule packs and carry a band (0 to 3) into every verdict; high bands have to earn their session with an Argon2id proof of work. The canvas challenge is next.
 
 - [x] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
 - [x] TypeScript signer (`client/`), tested against the same vectors and in Chromium/Firefox/WebKit
@@ -23,7 +23,7 @@ Early, but the core loop works: a browser can get a session from the proxy and m
 - [x] session refresh with a mid-session fingerprint re-check; sessions persist across page loads
 - [x] scoring with rule packs (`rulepacks/core` is built in)
 - [ ] canvas challenge
-- [ ] Argon2id fallback
+- [x] Argon2id proof-of-work step-up for high bands
 - [ ] demo you can try to break
 
 ## Layout
@@ -39,6 +39,7 @@ testvectors/   shared vectors the Rust and TS sides both test against
 
 ```js
 import { SignprintClient } from "@signprint/client";
+// or, without a bundler: import { SignprintClient } from "/path/to/signprint.js";
 
 const sp = new SignprintClient();
 const res = await sp.fetch("/api/cart", {
@@ -75,6 +76,20 @@ bands = [0, 30, 70]   # score upper bounds for bands 0, 1, 2
 ```
 
 Rules are a few lines of TOML each; see `rulepacks/core/core.toml` for the format.
+
+### Proof of work
+
+Sessions at band 2 or above get an Argon2id puzzle before their session (about a second of browser time at band 2, a few seconds at band 3, on a desktop). It doesn't detect anything, it just makes each suspicious session cost something. Tune or turn it off:
+
+```toml
+[pow]
+enabled = true
+stepup_band = 2
+memory_kib = 16384
+bits = [4, 6]   # difficulty for band 2 and band 3
+```
+
+Pass `onPowProgress` to `SignprintClient` if you want to show a progress bar while it runs.
 
 Your app receives a `signprint-verdict` header on every proxied request. Check it with `signprint_core::verdict::Verdict::verify` and treat a missing or invalid one as a failure; the app should only be reachable through the proxy.
 
