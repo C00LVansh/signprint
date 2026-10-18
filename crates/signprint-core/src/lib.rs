@@ -5,4 +5,5 @@
 
 pub mod network;
 pub mod store;
+pub mod verdict;
 pub mod verify;
