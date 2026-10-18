@@ -75,3 +75,51 @@ test("a replayed signed request is refused", async ({ page }) => {
   expect(res.replay).toBe(401);
   expect(res.error).toBe("sp_auth");
 });
+
+type Client = {
+  fetch(i: string, init?: RequestInit): Promise<Response>;
+  refresh(): Promise<void>;
+};
+
+async function signedCall(page: import("@playwright/test").Page, refreshFirst = false) {
+  return page.evaluate(async (refreshFirst) => {
+    const { SignprintClient } = window as unknown as { SignprintClient: new () => Client };
+    const sp = new SignprintClient();
+    if (refreshFirst) await sp.refresh();
+    const res = await sp.fetch("/api/items");
+    return { status: res.status, verdict: ((await res.json()) as Echo).headers["signprint-verdict"]! };
+  }, refreshFirst);
+}
+
+const sidOf = (verdict: string) => /;sid=([0-9a-f]+);/.exec(verdict)![1];
+
+test("the session survives a reload without a new challenge", async ({ page }) => {
+  let challenges = 0;
+  page.on("request", (r) => {
+    if (r.url().endsWith("/.well-known/signprint/v1/challenge")) challenges++;
+  });
+
+  const first = await signedCall(page);
+  await page.reload();
+  await page.waitForFunction(() => (window as unknown as { clientLoaded?: boolean }).clientLoaded === true);
+  const second = await signedCall(page);
+
+  expect(first.status).toBe(200);
+  expect(second.status).toBe(200);
+  expect(second.verdict).toMatch(/;act=allow;/);
+  expect(challenges).toBe(1);
+  expect(sidOf(second.verdict)).toBe(sidOf(first.verdict));
+});
+
+test("refresh swaps the key and keeps the session", async ({ page }) => {
+  let refreshes = 0;
+  page.on("request", (r) => {
+    if (r.url().endsWith("/.well-known/signprint/v1/refresh")) refreshes++;
+  });
+  const before = await signedCall(page);
+  const after = await signedCall(page, true);
+  expect(refreshes).toBe(1);
+  expect(after.status).toBe(200);
+  expect(after.verdict).toMatch(/;act=allow;/);
+  expect(sidOf(after.verdict)).toBe(sidOf(before.verdict));
+});
