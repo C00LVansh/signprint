@@ -92,7 +92,13 @@ pub struct Verified {
     pub band: u8,
     pub flags: Flags,
     pub policy: u16,
+    pub issued_at: u32,
     pub expires_at: u32,
+    pub epoch: u16,
+    pub client_key_hash: [u8; 16],
+    pub fp_digest: [u8; 8],
+    /// Key id the token was sealed with; its bind key made the tags above.
+    pub kid: u8,
     pub requests: u64,
 }
 
@@ -112,6 +118,19 @@ impl<S: Store> Verifier<S> {
     }
 
     pub fn verify(&self, req: &Request<'_>, net: &Network, now: u64) -> Result<Verified, Reject> {
+        self.verify_with(req, net, now, true)
+    }
+
+    /// `check_bindings = false` is only for the refresh endpoint: a client told
+    /// to rebind refreshes from its new network, and the refresh re-binds the
+    /// session there. Everything else (MAC, replay, budget) still applies.
+    pub fn verify_with(
+        &self,
+        req: &Request<'_>,
+        net: &Network,
+        now: u64,
+        check_bindings: bool,
+    ) -> Result<Verified, Reject> {
         // 1. structure
         let (Some(input), Some(signature)) = (req.signature_input, req.signature) else {
             return Err(Reject::Missing);
@@ -184,7 +203,7 @@ impl<S: Store> Verifier<S> {
 
         // 8. bindings
         let keys = self.ring.get(kid).ok_or(Reject::Auth)?;
-        if !token.flags.has(Flags::NET_ABSENT) {
+        if check_bindings && !token.flags.has(Flags::NET_ABSENT) {
             let ok = net.ja4n.as_deref().is_some_and(|j| {
                 tags_equal(
                     &bind::tag(&keys.bind, "ja4n", j.as_bytes()),
@@ -196,7 +215,7 @@ impl<S: Store> Verifier<S> {
             }
         }
         let net_tag = bind::tag(&keys.bind, "net", &bind::ip_prefix(net.peer_ip));
-        if !tags_equal(&net_tag, &token.bind_net) {
+        if check_bindings && !tags_equal(&net_tag, &token.bind_net) {
             return Err(Reject::Rebind);
         }
 
@@ -205,7 +224,12 @@ impl<S: Store> Verifier<S> {
             band: token.band,
             flags: token.flags,
             policy: token.policy,
+            issued_at: token.issued_at,
             expires_at: token.expires_at,
+            epoch: token.epoch,
+            client_key_hash: token.client_key_hash,
+            fp_digest: token.fp_digest,
+            kid,
             requests,
         })
     }
