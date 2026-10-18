@@ -32,6 +32,11 @@ test("challenge, attest, then signed requests are allowed", async ({ page }) => 
     expect(r.status).toBe(200);
     expect(r.echo.headers["signprint-verdict"]).toMatch(/^v=1;act=allow;mode=enforce;/);
   }
+  // These browsers are Playwright-driven, so navigator.webdriver is true and
+  // the core pack should put them in band 2 or 3. The app sees the band and
+  // decides what to do with it.
+  const band = Number(/;band=(\d);/.exec(out[0]!.echo.headers["signprint-verdict"]!)![1]);
+  expect(band).toBeGreaterThanOrEqual(2);
   expect(out[0]!.echo.body_len).toBe(JSON.stringify({ qty: 1 }).length);
   expect(out[0]!.echo.path).toBe("/api/cart?n=1");
   // same session for every request: the day-keyed sid hash doesn't change

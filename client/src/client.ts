@@ -10,6 +10,7 @@
 import { fromBase64Url, toBase64, toBase64Url } from "./b64.ts";
 import { deriveSessionKey, exportPublicKey, generateClientKey } from "./crypto.ts";
 import { Counter } from "./nonce.ts";
+import { collectSignals } from "./signals.ts";
 import { signRequest, type Session } from "./sign.ts";
 
 const WELL_KNOWN = "/.well-known/signprint/v1/";
@@ -34,6 +35,8 @@ interface Offer {
   probe_key: string;
   ephemeral_public: string;
   program: string;
+  /** Signal names the server's rules read. */
+  signals?: string[];
   expires_at: number;
   server_time: number;
 }
@@ -122,6 +125,7 @@ export class SignprintClient {
     if (!probe) throw new Error("signprint: challenge program didn't register");
     delete globalThis.__signprint![offer.probe_key];
     const answers = probe();
+    const signals = await collectSignals(offer.signals ?? []);
 
     const client = await generateClientKey();
     const key = await deriveSessionKey(client.privateKey, fromBase64Url(offer.ephemeral_public));
@@ -129,6 +133,7 @@ export class SignprintClient {
       cid: offer.cid,
       client_public: toBase64Url(await exportPublicKey(client.publicKey)),
       probe: answers,
+      signals,
     });
     const enc = new TextEncoder();
     const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(ATTEST_DOMAIN + body)));
