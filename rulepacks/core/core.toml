@@ -144,3 +144,42 @@ family = "consistency"
 weight = 30
 when = 'js.notification_permission == "denied" && js.perm_notifications == "prompt"'
 note = "Notification.permission and the Permissions API disagree (old headless bug)"
+
+# --- canvas challenge --------------------------------------------------------
+# cnv.* signals come from the proxy comparing canvas answers with calibrated
+# devices of the claimed class; none of them fire until classes are calibrated.
+
+[[rule]]
+id = "core.canvas_class_lie"
+family = "challenge"
+weight = 50
+when = "cnv.class_lie == true"
+note = "renders exactly like a different, calibrated device class than it claims"
+
+[[rule]]
+id = "core.canvas_unknown_answer"
+family = "challenge"
+weight = 15
+when = "cnv.match == false && cnv.class_lie != true"
+note = "answer not seen from this calibrated class (could also be a new driver)"
+
+[[rule]]
+id = "core.canvas_match"
+family = "challenge"
+weight = -15
+when = "cnv.match == true"
+note = "renders like calibrated devices of the class it claims"
+
+[[rule]]
+id = "core.canvas_noise_unexplained"
+family = "consistency"
+weight = 30
+when = 'cnv.noise == "noise" && js.engine == "blink" && !contains(lower(js.uad_brands), "brave")'
+note = "canvas readbacks are noised, but nothing else says this is a privacy browser"
+
+[[rule]]
+id = "core.canvas_skipped"
+family = "challenge"
+weight = 20
+when = "cnv.present == false"
+note = "the canvas challenge was offered but not answered"
