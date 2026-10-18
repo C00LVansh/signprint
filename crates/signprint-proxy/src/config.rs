@@ -156,6 +156,54 @@ fn default_max_body() -> usize {
     64 * 1024
 }
 
+/// Argon2id step-up for high-band sessions.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowSetting {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "default_stepup_band")]
+    pub stepup_band: u8,
+    #[serde(default = "default_pow_memory")]
+    pub memory_kib: u32,
+    #[serde(default = "default_pow_iterations")]
+    pub iterations: u8,
+    #[serde(default = "default_pow_puzzles")]
+    pub puzzles: u8,
+    /// Leading zero bits per puzzle for band 2 and band 3.
+    #[serde(default = "default_pow_bits")]
+    pub bits: [u8; 2],
+}
+
+impl Default for PowSetting {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            stepup_band: default_stepup_band(),
+            memory_kib: default_pow_memory(),
+            iterations: default_pow_iterations(),
+            puzzles: default_pow_puzzles(),
+            bits: default_pow_bits(),
+        }
+    }
+}
+
+fn default_stepup_band() -> u8 {
+    2
+}
+fn default_pow_memory() -> u32 {
+    16 * 1024
+}
+fn default_pow_iterations() -> u8 {
+    1
+}
+fn default_pow_puzzles() -> u8 {
+    4
+}
+fn default_pow_bits() -> [u8; 2] {
+    [4, 6]
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
@@ -203,6 +251,8 @@ pub struct Config {
     pub session: Session,
     #[serde(default)]
     pub rules: Rules,
+    #[serde(default)]
+    pub pow: PowSetting,
     #[serde(default, rename = "route")]
     pub routes: Vec<RouteConfig>,
 }
@@ -237,6 +287,19 @@ impl Config {
         if self.session.max_body_bytes > 64 * 1024 {
             // pingora's retry buffer, which we rely on to replay the body, caps at 64 KiB
             return bad("session.max_body_bytes can't exceed 65536".into());
+        }
+        let p = &self.pow;
+        if p.enabled {
+            if !(8..=256 * 1024).contains(&p.memory_kib) {
+                return bad("pow.memory_kib must be between 8 and 262144".into());
+            }
+            if p.puzzles == 0
+                || p.puzzles > 16
+                || p.iterations == 0
+                || p.bits.iter().any(|b| *b > 16)
+            {
+                return bad("pow: puzzles 1-16, iterations >= 1, bits <= 16".into());
+            }
         }
         for r in &self.routes {
             if !r.path_prefix.starts_with('/') {

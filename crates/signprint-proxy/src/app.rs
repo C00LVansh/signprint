@@ -5,7 +5,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use signprint_core::issue::{self, Issuer, IssuerConfig};
+use signprint_core::issue::{self, Attested, Issuer, IssuerConfig, PowConfig};
 use signprint_core::network::{ForwardedTrusted, Network};
 use signprint_core::store::MemoryStore;
 use signprint_core::verdict::{self, Action, Mode, Verdict};
@@ -129,6 +129,14 @@ impl App {
                     session_ttl_secs: cfg.session.ttl_secs,
                     absolute_ttl_secs: cfg.session.absolute_ttl_secs,
                     bands: cfg.rules.bands,
+                    pow: cfg.pow.enabled.then(|| PowConfig {
+                        stepup_band: cfg.pow.stepup_band,
+                        memory_kib: cfg.pow.memory_kib,
+                        iterations: cfg.pow.iterations,
+                        puzzles: cfg.pow.puzzles,
+                        bits: cfg.pow.bits,
+                        ..PowConfig::default()
+                    }),
                 },
                 rules,
             ),
@@ -167,7 +175,7 @@ impl App {
     pub fn well_known_body_limit(&self, method: &str, path: &str) -> Option<usize> {
         let rest = path.strip_prefix(WELL_KNOWN)?;
         Some(
-            if method == "POST" && (rest == "attest" || rest == "refresh") {
+            if method == "POST" && matches!(rest, "attest" | "refresh" | "pow") {
                 issue::MAX_ATTEST_BODY
             } else {
                 0
@@ -224,7 +232,7 @@ impl App {
                     .issuer
                     .attest(&self.store, req.body, attest_mac, &net, &server, now)
                 {
-                    Ok(issued) => {
+                    Ok(Attested::Session(issued)) => {
                         log::info!(
                             "session issued: band {} score {} rules [{}]",
                             issued.band,
@@ -236,6 +244,29 @@ impl App {
                             serde_json::json!({
                                 "token": issued.token,
                                 "expires_at": issued.expires_at,
+                                "server_time": now,
+                            }),
+                        )
+                    }
+                    Ok(Attested::StepUp(up)) => {
+                        log::info!(
+                            "step-up required: band {} score {} rules [{}]",
+                            up.band,
+                            up.score,
+                            up.hits.join(", ")
+                        );
+                        Reply::json(
+                            200,
+                            serde_json::json!({
+                                "pow": {
+                                    "ticket": up.ticket,
+                                    "id": b64::encode_url(&up.id),
+                                    "memory_kib": up.params.memory_kib,
+                                    "iterations": up.params.iterations,
+                                    "puzzles": up.params.puzzles,
+                                    "bits": up.params.bits,
+                                    "expires_at": up.expires_at,
+                                },
                                 "server_time": now,
                             }),
                         )
@@ -266,6 +297,30 @@ impl App {
                             "token": r.token,
                             "ephemeral_public": b64::encode_url(&r.ephemeral_public),
                             "expires_at": r.expires_at,
+                            "server_time": now,
+                        }),
+                    ),
+                    Err(e) => Reply::error(e.status(), e.code()),
+                }
+            }
+            ("POST", "pow") => {
+                #[derive(serde::Deserialize)]
+                struct Solution {
+                    ticket: String,
+                    nonces: Vec<u32>,
+                }
+                let Ok(sol) = serde_json::from_slice::<Solution>(req.body) else {
+                    return Reply::error(400, "sp_malformed");
+                };
+                match self
+                    .issuer
+                    .redeem(&self.store, &sol.ticket, &sol.nonces, now)
+                {
+                    Ok(issued) => Reply::json(
+                        200,
+                        serde_json::json!({
+                            "token": issued.token,
+                            "expires_at": issued.expires_at,
                             "server_time": now,
                         }),
                     ),
@@ -405,6 +460,8 @@ mod tests {
             keyring = "k.json"
             upstream_secret_env = "A"
             log_root_env = "B"
+            [pow]
+            memory_kib = 64
             [[route]]
             path_prefix = "/api/"
             require = "signed"
@@ -764,6 +821,92 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v.action, Action::Allow);
+    }
+
+    /// A flagged attestation gets a puzzle instead of a session; solving it
+    /// releases the session.
+    #[test]
+    fn high_band_attestation_steps_up() {
+        use hmac::{Hmac, KeyInit, Mac};
+        use p256::elliptic_curve::sec1::ToSec1Point;
+        use sha2::Sha256;
+        use signprint_core::pow::{self, PowParams};
+
+        let (app, _) = app("enforce");
+        let base = Incoming {
+            method: "GET",
+            authority: "shop.example",
+            https: true,
+            path: "/.well-known/signprint/v1/challenge",
+            peer_ip: Some("192.0.2.9".parse().unwrap()),
+            ..Default::default()
+        };
+        let offer: serde_json::Value =
+            serde_json::from_str(&app.well_known(&base, None, None, NOW).body).unwrap();
+        let cid = offer["cid"].as_str().unwrap();
+        let probe = app.issuer.program(cid, NOW).unwrap();
+
+        let client = p256::SecretKey::from_slice(&[0x33; 32]).unwrap();
+        let eph = p256::PublicKey::from_sec1_bytes(
+            &b64::decode_url(offer["ephemeral_public"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let k: [u8; 32] = p256::ecdh::diffie_hellman(client.to_nonzero_scalar(), eph.as_affine())
+            .raw_secret_bytes()
+            .as_slice()
+            .try_into()
+            .unwrap();
+        // navigator.webdriver = true is worth 60, which is band 2
+        let body = serde_json::json!({
+            "cid": cid,
+            "client_public": b64::encode_url(client.public_key().to_sec1_point(false).as_bytes()),
+            "probe": { probe.field: probe.answer },
+            "signals": { "js.webdriver": true },
+        })
+        .to_string();
+        let mut m = Hmac::<Sha256>::new_from_slice(&k).unwrap();
+        m.update(issue::ATTEST_DOMAIN);
+        m.update(body.as_bytes());
+        let mac = b64::encode_std(&m.finalize().into_bytes());
+        let attest = Incoming {
+            method: "POST",
+            path: "/.well-known/signprint/v1/attest",
+            body: body.as_bytes(),
+            ..base.clone()
+        };
+        let r = app.well_known(&attest, Some(&mac), None, NOW);
+        assert_eq!(r.status, 200, "{}", r.body);
+        let reply: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert!(reply.get("token").is_none(), "no session before the puzzle");
+        let pow_offer = &reply["pow"];
+
+        let params = PowParams {
+            memory_kib: pow_offer["memory_kib"].as_u64().unwrap() as u32,
+            iterations: pow_offer["iterations"].as_u64().unwrap() as u8,
+            puzzles: pow_offer["puzzles"].as_u64().unwrap() as u8,
+            bits: pow_offer["bits"].as_u64().unwrap() as u8,
+        };
+        let ticket = pow_offer["ticket"].as_str().unwrap();
+        let ring = KeyRing::new(1, 1, &[(1, [9; 32])]).unwrap();
+        let id: [u8; 16] = b64::decode_url(pow_offer["id"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let solution =
+            serde_json::json!({ "ticket": ticket, "nonces": pow::solve(&params, &id) }).to_string();
+        let redeem = Incoming {
+            method: "POST",
+            path: "/.well-known/signprint/v1/pow",
+            body: solution.as_bytes(),
+            ..base.clone()
+        };
+        let r = app.well_known(&redeem, None, None, NOW + 1);
+        assert_eq!(r.status, 200, "{}", r.body);
+        let session: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        let token = SessionToken::open(&ring, session["token"].as_str().unwrap()).unwrap();
+        assert_eq!(token.band, 2);
+        assert!(token.flags.has(Flags::POW_PASSED));
+        assert_eq!(token.mac_key, k);
     }
 
     #[test]

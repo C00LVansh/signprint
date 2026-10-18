@@ -136,6 +136,8 @@ pub enum Attested {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepUp {
     pub ticket: String,
+    /// Puzzle inputs include this; it's random and safe to show.
+    pub id: [u8; 16],
     pub params: PowParams,
     pub expires_at: u64,
     pub band: u8,
@@ -462,8 +464,9 @@ impl Issuer {
             bits,
         };
         let ticket_exp = now as u32 + cfg.ticket_ttl_secs;
+        let id = random();
         let ticket = PowTicket {
-            id: random(),
+            id,
             issued_at: now as u32,
             expires_at: ticket_exp,
             memory_kib: params.memory_kib,
@@ -474,6 +477,7 @@ impl Issuer {
         };
         Ok(Attested::StepUp(StepUp {
             ticket: ticket.seal(&self.ring, random()),
+            id,
             params,
             expires_at: ticket_exp as u64,
             band,
