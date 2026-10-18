@@ -12,3 +12,4 @@ export type { Signals } from "./signals.ts";
 export type { StoredSession } from "./store.ts";
 export { solvePow } from "./pow.ts";
 export type { PowOffer } from "./pow.ts";
+export { challenge as canvasChallenge, pattern as canvasPattern } from "./canvas.ts";
