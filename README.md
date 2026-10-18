@@ -18,11 +18,12 @@ Early, but the core loop works: a browser can get a session from the proxy and m
 - [x] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
 - [x] TypeScript signer (`client/`), tested against the same vectors and in Chromium/Firefox/WebKit
 - [x] Pingora proxy: TLS, JA4 capture, signed-request verification, verdict header, observe/enforce
-- [ ] proxy: TLS cert reload, Redis store for multiple instances
+- [x] refreshing a session retires the old token immediately
+- [ ] later: Redis store for running several proxy instances, graceful TLS cert reload (restart the proxy after renewing for now)
 - [x] session issuance: challenge, per-challenge probe program, ECDH attestation, `SignprintClient`
 - [x] session refresh with a mid-session fingerprint re-check; sessions persist across page loads
 - [x] scoring with rule packs (`rulepacks/core` is built in)
-- [x] canvas challenge: known-answer noise check, Picasso-style render, calibration
+- [x] canvas challenge: known-answer noise check, Picasso-style render, WebGL render judged against the reported GPU, calibration
 - [x] Argon2id proof-of-work step-up for high bands
 - [ ] demo you can try to break
 
@@ -97,6 +98,8 @@ await new SignprintClient().calibrate("<the token>")
 ```
 
 The answer database is built from your own devices on purpose: learning it from live traffic would let a bot farm teach it its own answers.
+
+There's also a WebGL render. WebGL output is decided by the GPU and driver rather than the browser, so it's checked against the GPU the browser *reports*: a browser claiming an RTX 3060 that renders exactly like SwiftShader gets flagged. Calibration records both renders. Independently of calibration, the same 2D answer turning up from browsers claiming three or more different engine/OS combinations is flagged as a replay.
 
 ### Proof of work
 
