@@ -53,3 +53,12 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium firefox webkit
       - run: npm run test:browser
+
+  proxy-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p signprint-proxy
+      - run: crates/signprint-proxy/tests/e2e/run.sh target/debug/signprint-proxy
