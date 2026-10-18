@@ -120,6 +120,12 @@ impl SessionToken {
     }
 
     pub fn open(ring: &KeyRing, encoded: &str) -> Result<Self, Error> {
+        Self::open_with_kid(ring, encoded).map(|(t, _)| t)
+    }
+
+    /// Like [`open`](Self::open) but also returns the kid it was sealed with.
+    /// The binding tags inside were made with that kid's bind key.
+    pub fn open_with_kid(ring: &KeyRing, encoded: &str) -> Result<(Self, u8), Error> {
         // cheap length check before decoding anything an attacker sent us
         if encoded.len() > SEALED_LEN * 4 / 3 + 4 {
             return Err(Error::Malformed("session token length"));
@@ -128,7 +134,7 @@ impl SessionToken {
         let header = Header::peek(&raw, Kind::Token)?;
         let keys = ring.get(header.kid).ok_or(Error::UnknownKid(header.kid))?;
         let plain = seal::open(&keys.seal_token, &raw, Kind::Token, ring.host_id())?;
-        Self::from_bytes(&plain)
+        Ok((Self::from_bytes(&plain)?, header.kid))
     }
 
     pub fn is_expired(&self, now: u32) -> bool {
