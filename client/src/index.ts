@@ -5,3 +5,5 @@ export type { Components, Params } from "./signature.ts";
 export { contentDigest, deriveSessionKey, exportPublicKey, generateClientKey, mac } from "./crypto.ts";
 export { signRequest } from "./sign.ts";
 export type { Session, SignedHeaders } from "./sign.ts";
+export { SignprintClient, SignprintError } from "./client.ts";
+export type { ClientOptions } from "./client.ts";
