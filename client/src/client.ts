@@ -10,6 +10,7 @@
 import { fromBase64Url, toBase64, toBase64Url } from "./b64.ts";
 import { deriveSessionKey, exportPublicKey, generateClientKey } from "./crypto.ts";
 import { Counter } from "./nonce.ts";
+import { solvePow, type PowOffer } from "./pow.ts";
 import { collectSignals } from "./signals.ts";
 import { signRequest } from "./sign.ts";
 import { clearSession, loadCounterState, loadSession, saveCounterState, saveSession, type StoredSession } from "./store.ts";
@@ -105,15 +106,23 @@ async function bodyBytes(init?: RequestInit, input?: RequestInfo | URL): Promise
 export interface ClientOptions {
   /** Origin of the signprint proxy; defaults to the page's own origin. */
   origin?: string;
+  /**
+   * Called while a proof-of-work step-up is being solved, with the attempts
+   * so far and the expected total. Use it to show progress; the puzzle
+   * usually takes a second or a few.
+   */
+  onPowProgress?: (attempts: number, expected: number) => void;
 }
 
 export class SignprintClient {
   private readonly origin: string;
+  private readonly onPowProgress: ClientOptions["onPowProgress"];
   private current: Promise<StoredSession> | null = null;
   private readonly counter: Counter;
 
   constructor(opts: ClientOptions = {}) {
     this.origin = opts.origin ?? location.origin;
+    this.onPowProgress = opts.onPowProgress;
     const saved = loadCounterState();
     this.counter = saved ? new Counter(saved.tab, saved.next) : new Counter();
   }
@@ -177,7 +186,24 @@ export class SignprintClient {
       body,
     });
     if (!att.ok) throw await readError(att);
-    const issued = (await att.json()) as { token: string; expires_at: number; server_time: number };
+    let issued = (await att.json()) as { token?: string; pow?: PowOffer; expires_at: number; server_time: number };
+
+    if (issued.pow) {
+      // high band: earn the session with a proof of work
+      const offer = issued.pow;
+      const expected = offer.puzzles * 2 ** offer.bits;
+      const nonces = await solvePow(offer, { onProgress: (n) => this.onPowProgress?.(n, expected) });
+      const red = await fetch(this.origin + WELL_KNOWN + "pow", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ticket: offer.ticket, nonces }),
+      });
+      if (!red.ok) throw await readError(red);
+      issued = await red.json();
+    }
+    if (!issued.token) throw new Error("signprint: attest response had no session");
 
     const session: StoredSession = {
       token: issued.token,

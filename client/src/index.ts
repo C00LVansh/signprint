@@ -10,3 +10,5 @@ export type { ClientOptions } from "./client.ts";
 export { collectSignals } from "./signals.ts";
 export type { Signals } from "./signals.ts";
 export type { StoredSession } from "./store.ts";
+export { solvePow } from "./pow.ts";
+export type { PowOffer } from "./pow.ts";
