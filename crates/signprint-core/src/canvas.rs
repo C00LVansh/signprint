@@ -228,7 +228,7 @@ mod tests {
 
         let s = c.signals(Some(WIN), 100, &id, None, None);
         assert_eq!(s.get("cnv.present"), Some(&Value::Bool(false)));
-        assert!(s.get("cnv.match").is_none());
+        assert!(!s.contains_key("cnv.match"));
     }
 
     #[test]
