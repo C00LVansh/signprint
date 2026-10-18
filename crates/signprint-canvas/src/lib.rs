@@ -6,5 +6,6 @@
 //! known-answer pattern, simple enough to compute here exactly.
 
 pub mod class;
+pub mod kb;
 pub mod pattern;
 pub mod prng;
