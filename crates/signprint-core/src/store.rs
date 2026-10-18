@@ -43,6 +43,13 @@ pub trait Store: Send + Sync {
     fn revoke(&self, sid: &SessionId, expires_at: u64);
 
     fn is_revoked(&self, sid: &SessionId, now: u64) -> bool;
+
+    /// Called on refresh: tokens of this session with an older epoch stop
+    /// being accepted.
+    fn advance_epoch(&self, sid: &SessionId, epoch: u16, expires_at: u64);
+
+    /// Oldest epoch still accepted for `sid` (0 if we know nothing about it).
+    fn min_epoch(&self, sid: &SessionId, now: u64) -> u16;
 }
 
 impl<T: Store + ?Sized> Store for std::sync::Arc<T> {
@@ -65,12 +72,19 @@ impl<T: Store + ?Sized> Store for std::sync::Arc<T> {
     fn is_revoked(&self, sid: &SessionId, now: u64) -> bool {
         (**self).is_revoked(sid, now)
     }
+    fn advance_epoch(&self, sid: &SessionId, epoch: u16, expires_at: u64) {
+        (**self).advance_epoch(sid, epoch, expires_at)
+    }
+    fn min_epoch(&self, sid: &SessionId, now: u64) -> u16 {
+        (**self).min_epoch(sid, now)
+    }
 }
 
 #[derive(Debug)]
 struct Session {
     expires_at: u64,
     revoked: bool,
+    min_epoch: u16,
     requests: u64,
     tabs: Vec<(u32, ReplayWindow)>,
 }
@@ -152,6 +166,7 @@ impl Store for MemoryStore {
                 Session {
                     expires_at,
                     revoked: false,
+                    min_epoch: 0,
                     requests: 0,
                     tabs: Vec::new(),
                 },
@@ -201,6 +216,7 @@ impl Store for MemoryStore {
         let entry = shard.sessions.entry(*sid).or_insert(Session {
             expires_at,
             revoked: true,
+            min_epoch: 0,
             requests: 0,
             tabs: Vec::new(),
         });
@@ -213,6 +229,29 @@ impl Store for MemoryStore {
             .sessions
             .get(sid)
             .is_some_and(|s| s.revoked && s.expires_at > now)
+    }
+
+    fn advance_epoch(&self, sid: &SessionId, epoch: u16, expires_at: u64) {
+        let mut shard = self.shard(sid);
+        let entry = shard.sessions.entry(*sid).or_insert(Session {
+            expires_at,
+            revoked: false,
+            min_epoch: 0,
+            requests: 0,
+            tabs: Vec::new(),
+        });
+        entry.min_epoch = entry.min_epoch.max(epoch);
+        // the refreshed token lives longer, so the record has to as well
+        entry.expires_at = entry.expires_at.max(expires_at);
+    }
+
+    fn min_epoch(&self, sid: &SessionId, now: u64) -> u16 {
+        let shard = self.shard(sid);
+        shard
+            .sessions
+            .get(sid)
+            .filter(|s| s.expires_at > now)
+            .map_or(0, |s| s.min_epoch)
     }
 }
 
@@ -281,6 +320,16 @@ mod tests {
             s.spend_challenge(&[9; 16], 200, 61),
             "expired entries don't block"
         );
+    }
+
+    #[test]
+    fn epochs_only_move_forward() {
+        let s = MemoryStore::default();
+        assert_eq!(s.min_epoch(&SID, 0), 0);
+        s.advance_epoch(&SID, 2, 100);
+        s.advance_epoch(&SID, 1, 100);
+        assert_eq!(s.min_epoch(&SID, 50), 2);
+        assert_eq!(s.min_epoch(&SID, 150), 0, "forgotten once expired");
     }
 
     #[test]

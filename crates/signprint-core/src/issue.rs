@@ -574,8 +574,9 @@ impl Issuer {
     /// the already-verified signed refresh request. The client proves it still
     /// holds its key (its public key must match the token) and re-reports the
     /// fingerprint subset, which must match what was sealed at attest.
-    pub fn refresh(
+    pub fn refresh<S: Store>(
         &self,
+        store: &S,
         verified: &Verified,
         body: &[u8],
         net: &Network,
@@ -634,6 +635,8 @@ impl Issuer {
             flags,
             policy: verified.policy,
         };
+        // the token this replaces stops working now
+        store.advance_epoch(&token.sid, token.epoch, expires_at as u64);
         Ok(Refreshed {
             token: token.seal(&self.ring, random()),
             ephemeral_public: eph
@@ -955,7 +958,13 @@ mod tests {
         let v = verified_from(&i, &issued.token);
 
         let r = i
-            .refresh(&v, &refresh_body(&client, fp), &net(), NOW + 300)
+            .refresh(
+                &MemoryStore::default(),
+                &v,
+                &refresh_body(&client, fp),
+                &net(),
+                NOW + 300,
+            )
             .unwrap();
         let old = SessionToken::open(&i.ring, &issued.token).unwrap();
         let new = SessionToken::open(&i.ring, &r.token).unwrap();
@@ -980,23 +989,47 @@ mod tests {
 
         let changed = serde_json::json!({ "js.ua": "Mozilla/5.0 Y", "js.hw_concurrency": 8 });
         assert_eq!(
-            i.refresh(&v, &refresh_body(&client, changed), &net(), NOW + 10),
+            i.refresh(
+                &MemoryStore::default(),
+                &v,
+                &refresh_body(&client, changed),
+                &net(),
+                NOW + 10
+            ),
             Err(AttestError::Reattest)
         );
 
         let stranger = new_ephemeral();
         assert_eq!(
-            i.refresh(&v, &refresh_body(&stranger, fp.clone()), &net(), NOW + 10),
+            i.refresh(
+                &MemoryStore::default(),
+                &v,
+                &refresh_body(&stranger, fp.clone()),
+                &net(),
+                NOW + 10
+            ),
             Err(AttestError::Rejected)
         );
 
         assert_eq!(
-            i.refresh(&v, &refresh_body(&client, fp.clone()), &net(), NOW + 3600),
+            i.refresh(
+                &MemoryStore::default(),
+                &v,
+                &refresh_body(&client, fp.clone()),
+                &net(),
+                NOW + 3600
+            ),
             Err(AttestError::Reattest)
         );
         // near the cap, the new token stops at the absolute end
         let r = i
-            .refresh(&v, &refresh_body(&client, fp), &net(), NOW + 3300)
+            .refresh(
+                &MemoryStore::default(),
+                &v,
+                &refresh_body(&client, fp),
+                &net(),
+                NOW + 3300,
+            )
             .unwrap();
         assert_eq!(r.expires_at, NOW + 3600);
     }

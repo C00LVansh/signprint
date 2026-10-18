@@ -151,7 +151,10 @@ impl<S: Store> Verifier<S> {
         // 3. token
         let (token, kid) = SessionToken::open_with_kid(&self.ring, &received.params.keyid)
             .map_err(|_| Reject::Auth)?;
-        if token.is_expired(now as u32) || self.store.is_revoked(&token.sid, now) {
+        if token.is_expired(now as u32)
+            || self.store.is_revoked(&token.sid, now)
+            || token.epoch < self.store.min_epoch(&token.sid, now)
+        {
             return Err(Reject::Auth);
         }
 
@@ -390,6 +393,19 @@ mod tests {
 
         let s = sign(&f, "GET", "/", b"", 1, NOW);
         f.verifier.store().revoke(&[5; 16], NOW + 600);
+        assert_eq!(
+            f.verifier
+                .verify(&request("GET", "/", &s, b""), &f.net, NOW),
+            Err(Reject::Auth)
+        );
+    }
+
+    #[test]
+    fn superseded_epoch_is_refused() {
+        let f = fixture();
+        let s = sign(&f, "GET", "/", b"", 0, NOW);
+        // a refresh moved the session on to epoch 1; this token is epoch 0
+        f.verifier.store().advance_epoch(&[5; 16], 1, NOW + 600);
         assert_eq!(
             f.verifier
                 .verify(&request("GET", "/", &s, b""), &f.net, NOW),

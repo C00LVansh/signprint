@@ -307,7 +307,10 @@ impl App {
                     Ok(v) => v,
                     Err(r) => return Reply::error(r.status(), r.code()),
                 };
-                match self.issuer.refresh(&verified, req.body, &net, now) {
+                match self
+                    .issuer
+                    .refresh(&self.store, &verified, req.body, &net, now)
+                {
                     Ok(r) => Reply::json(
                         200,
                         serde_json::json!({
@@ -896,6 +899,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v.action, Action::Allow);
+
+        // and the token the refresh replaced no longer works at all
+        let params = sig::Params {
+            created: NOW + 102,
+            keyid: token.into(),
+            nonce: RequestNonce { tab: 7, ctr: 3 },
+        };
+        let base = sig::signature_base(
+            &sig::Components {
+                method: "GET",
+                authority: "shop.example",
+                path: "/api/items",
+                query: "?",
+                content_digest: None,
+            },
+            &params,
+        );
+        let (input, signature) = sig::header_values(&params, false, &sig::mac(&k, &base));
+        let old = Incoming {
+            method: "GET",
+            authority: "shop.example",
+            https: true,
+            path: "/api/items",
+            signature_input: Some(&input),
+            signature: Some(&signature),
+            peer_ip: Some(moved),
+            ..Default::default()
+        };
+        assert_eq!(
+            app.decide(&old, NOW + 102, 3),
+            Decision::Reject {
+                status: 401,
+                code: "sp_auth"
+            }
+        );
     }
 
     /// A flagged attestation gets a puzzle instead of a session; solving it
