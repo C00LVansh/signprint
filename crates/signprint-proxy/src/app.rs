@@ -184,6 +184,7 @@ impl App {
                     200,
                     serde_json::json!({
                         "cid": offer.cid,
+                        "probe_key": offer.probe_key,
                         "ephemeral_public": b64::encode_url(&offer.ephemeral_public),
                         "program": format!("{WELL_KNOWN}c/{}.js", offer.cid),
                         "expires_at": offer.expires_at,

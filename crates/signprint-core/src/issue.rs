@@ -47,6 +47,8 @@ impl Default for IssuerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Offer {
     pub cid: String,
+    /// Where the probe program registers itself on `self.__signprint`.
+    pub probe_key: String,
     /// Uncompressed SEC1 point, the format WebCrypto's "raw" import expects.
     pub ephemeral_public: [u8; 65],
     pub expires_at: u64,
@@ -157,6 +159,7 @@ impl Issuer {
         };
         let point = eph.public_key().to_sec1_point(false);
         Offer {
+            probe_key: probe::registry_key(&c.id),
             cid: c.seal(&self.ring, random()),
             ephemeral_public: point
                 .as_bytes()
