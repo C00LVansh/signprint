@@ -44,7 +44,36 @@ fn load(path: &str) -> Result<(config::Config, app::App), config::ConfigError> {
     let upstream = config::secret_from_env(&cfg.keys.upstream_secret_env)?;
     let log_root = config::secret_from_env(&cfg.keys.log_root_env)?;
     let rules = config::load_rules(&cfg.rules)?;
-    let app = app::App::new(&cfg, ring, rules, upstream, log_root);
+    let canvas = if cfg.canvas.enabled {
+        let c = signprint_core::canvas::Canvas::open(
+            signprint_core::canvas::CanvasConfig {
+                min_devices: cfg.canvas.min_devices,
+                kb_path: cfg.canvas.kb_path.clone(),
+                ..Default::default()
+            },
+            || u32::from_be_bytes(random32()[..4].try_into().unwrap()),
+        )
+        .map_err(|e| config::ConfigError::Invalid(e.to_string()))?;
+        Some(c)
+    } else {
+        None
+    };
+    let calibrate_token = match &cfg.canvas.calibrate_token_env {
+        Some(var) => Some(
+            std::env::var(var)
+                .map_err(|_| config::ConfigError::Invalid(format!("env var {var} not set")))?,
+        ),
+        None => None,
+    };
+    let app = app::App::new(
+        &cfg,
+        ring,
+        rules,
+        canvas,
+        calibrate_token,
+        upstream,
+        log_root,
+    );
     Ok((cfg, app))
 }
 

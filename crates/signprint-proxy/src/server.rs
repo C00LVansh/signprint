@@ -188,6 +188,7 @@ impl ProxyHttp for Proxy {
                 forwarded_ja4: header(req, &self.ja4_header),
                 user_agent: header(req, "user-agent"),
                 sec_ch_ua: header(req, "sec-ch-ua"),
+                calibrate_token: header(req, "signprint-calibrate"),
                 body: &body,
                 ..Default::default()
             };
@@ -239,6 +240,7 @@ impl ProxyHttp for Proxy {
             sec_ch_ua: header(req, "sec-ch-ua"),
             body: &body,
             body_too_large,
+            ..Default::default()
         };
 
         match self.app.decide(&incoming, now_secs(), request_id()) {

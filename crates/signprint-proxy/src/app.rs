@@ -62,6 +62,8 @@ pub struct Incoming<'a> {
     pub ja4n: Option<String>,
     pub user_agent: Option<&'a str>,
     pub sec_ch_ua: Option<&'a str>,
+    /// `signprint-calibrate` header, for the calibration endpoint.
+    pub calibrate_token: Option<&'a str>,
     pub body: &'a [u8],
     /// The body went past `max_body` and we stopped reading it.
     pub body_too_large: bool,
@@ -109,6 +111,7 @@ pub struct App {
     log_root: [u8; 32],
     forwarded: Option<ForwardedTrusted>,
     max_body: usize,
+    calibrate_token: Option<String>,
 }
 
 impl App {
@@ -116,30 +119,38 @@ impl App {
         cfg: &Config,
         ring: KeyRing,
         rules: RuleSet,
+        canvas: Option<signprint_core::canvas::Canvas>,
+        calibrate_token: Option<String>,
         upstream_key: [u8; 32],
         log_root: [u8; 32],
     ) -> Self {
         let trusted = cfg.trusted_upstreams();
         let store = Arc::new(MemoryStore::default());
+        let issuer = Issuer::new(
+            ring.clone(),
+            IssuerConfig {
+                challenge_ttl_secs: cfg.session.challenge_ttl_secs,
+                session_ttl_secs: cfg.session.ttl_secs,
+                absolute_ttl_secs: cfg.session.absolute_ttl_secs,
+                bands: cfg.rules.bands,
+                pow: cfg.pow.enabled.then(|| PowConfig {
+                    stepup_band: cfg.pow.stepup_band,
+                    memory_kib: cfg.pow.memory_kib,
+                    iterations: cfg.pow.iterations,
+                    puzzles: cfg.pow.puzzles,
+                    bits: cfg.pow.bits,
+                    ..PowConfig::default()
+                }),
+            },
+            rules,
+        );
+        let issuer = match canvas {
+            Some(c) => issuer.with_canvas(c),
+            None => issuer,
+        };
         Self {
-            issuer: Issuer::new(
-                ring.clone(),
-                IssuerConfig {
-                    challenge_ttl_secs: cfg.session.challenge_ttl_secs,
-                    session_ttl_secs: cfg.session.ttl_secs,
-                    absolute_ttl_secs: cfg.session.absolute_ttl_secs,
-                    bands: cfg.rules.bands,
-                    pow: cfg.pow.enabled.then(|| PowConfig {
-                        stepup_band: cfg.pow.stepup_band,
-                        memory_kib: cfg.pow.memory_kib,
-                        iterations: cfg.pow.iterations,
-                        puzzles: cfg.pow.puzzles,
-                        bits: cfg.pow.bits,
-                        ..PowConfig::default()
-                    }),
-                },
-                rules,
-            ),
+            issuer,
+            calibrate_token: calibrate_token.filter(|t| !t.is_empty()),
             store: store.clone(),
             verifier: Verifier::new(
                 ring,
@@ -175,7 +186,7 @@ impl App {
     pub fn well_known_body_limit(&self, method: &str, path: &str) -> Option<usize> {
         let rest = path.strip_prefix(WELL_KNOWN)?;
         Some(
-            if method == "POST" && matches!(rest, "attest" | "refresh" | "pow") {
+            if method == "POST" && matches!(rest, "attest" | "refresh" | "pow" | "calibrate") {
                 issue::MAX_ATTEST_BODY
             } else {
                 0
@@ -210,6 +221,12 @@ impl App {
                         "ephemeral_public": b64::encode_url(&offer.ephemeral_public),
                         "program": format!("{WELL_KNOWN}c/{}.js", offer.cid),
                         "signals": self.issuer.wanted_signals(),
+                        "canvas": offer.canvas.map(|t| serde_json::json!({
+                            "seed": t.seed,
+                            "rounds": t.rounds,
+                            "size": t.size,
+                            "pattern_seed": t.pattern_seed,
+                        })),
                         "expires_at": offer.expires_at,
                         "server_time": now,
                     }),
@@ -327,7 +344,60 @@ impl App {
                     Err(e) => Reply::error(e.status(), e.code()),
                 }
             }
+            (_, "calibrate") => self.calibrate(req),
             _ => Reply::error(404, "sp_not_found"),
+        }
+    }
+
+    /// Operator-only: `GET` lists the seed pool to render, `POST` records the
+    /// answers for the class this browser's User-Agent claims.
+    fn calibrate(&self, req: &Incoming<'_>) -> Reply {
+        let (Some(canvas), Some(expected)) = (self.issuer.canvas(), &self.calibrate_token) else {
+            return Reply::error(404, "sp_not_found");
+        };
+        let ok = req.calibrate_token.is_some_and(|t| {
+            use subtle::ConstantTimeEq;
+            t.len() == expected.len() && bool::from(t.as_bytes().ct_eq(expected.as_bytes()))
+        });
+        if !ok {
+            return Reply::error(401, "sp_auth");
+        }
+        if req.method == "GET" {
+            return Reply::json(
+                200,
+                serde_json::json!({ "seeds": canvas.pool(), "classes": canvas.summary() }),
+            );
+        }
+
+        #[derive(serde::Deserialize)]
+        struct Run {
+            device: String,
+            answers: Vec<(u32, String)>,
+        }
+        let Ok(run) = serde_json::from_slice::<Run>(req.body) else {
+            return Reply::error(400, "sp_malformed");
+        };
+        if run.device.is_empty()
+            || run.device.len() > 64
+            || run.answers.iter().any(|(_, a)| a.len() > 64)
+        {
+            return Reply::error(400, "sp_malformed");
+        }
+        match canvas.calibrate(req.user_agent.unwrap_or(""), &run.device, &run.answers) {
+            Ok((class, added)) => {
+                log::info!(
+                    "calibration: {class} from device {} added {added} answers",
+                    run.device
+                );
+                Reply::json(
+                    200,
+                    serde_json::json!({ "class": class.to_string(), "added": added }),
+                )
+            }
+            Err(e) => {
+                log::warn!("calibration failed: {e}");
+                Reply::error(400, "sp_malformed")
+            }
         }
     }
 
@@ -497,7 +567,7 @@ mod tests {
         .seal(&ring, [0; 24]);
         let rules = crate::config::load_rules(&Default::default()).unwrap();
         (
-            App::new(&config(mode), ring, rules, UPSTREAM, [5; 32]),
+            App::new(&config(mode), ring, rules, None, None, UPSTREAM, [5; 32]),
             token,
         )
     }

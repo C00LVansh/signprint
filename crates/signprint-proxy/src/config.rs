@@ -156,6 +156,37 @@ fn default_max_body() -> usize {
     64 * 1024
 }
 
+/// The canvas challenge and its answer database.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanvasSetting {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Where calibrated answers are kept. Without it they're lost on restart.
+    pub kb_path: Option<PathBuf>,
+    /// Calibrated devices a class needs before its answers count.
+    #[serde(default = "default_min_devices")]
+    pub min_devices: usize,
+    /// Env var with the token that calibration requests must present.
+    /// Unset means calibration is off.
+    pub calibrate_token_env: Option<String>,
+}
+
+impl Default for CanvasSetting {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            kb_path: None,
+            min_devices: default_min_devices(),
+            calibrate_token_env: None,
+        }
+    }
+}
+
+fn default_min_devices() -> usize {
+    3
+}
+
 /// Argon2id step-up for high-band sessions.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -253,6 +284,8 @@ pub struct Config {
     pub rules: Rules,
     #[serde(default)]
     pub pow: PowSetting,
+    #[serde(default)]
+    pub canvas: CanvasSetting,
     #[serde(default, rename = "route")]
     pub routes: Vec<RouteConfig>,
 }

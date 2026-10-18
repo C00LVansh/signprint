@@ -17,6 +17,7 @@ signprint-netfp = { path = "../signprint-netfp" }
 signprint-rules = { path = "../signprint-rules" }
 signprint-wire = { path = "../signprint-wire" }
 getrandom = "0.4"
+subtle.workspace = true
 log = "0.4"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
