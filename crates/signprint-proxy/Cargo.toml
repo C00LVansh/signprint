@@ -1,0 +1,35 @@
+[package]
+name = "signprint-proxy"
+description = "Reverse proxy that verifies signprint-signed requests before they reach your app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "signprint-proxy"
+path = "src/main.rs"
+
+[dependencies]
+signprint-core = { path = "../signprint-core" }
+signprint-netfp = { path = "../signprint-netfp" }
+signprint-wire = { path = "../signprint-wire" }
+getrandom = "0.4"
+log = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = "1.1"
+
+# Pingora only builds on unix; the request handling logic above it doesn't
+# depend on it and is tested everywhere.
+[target.'cfg(unix)'.dependencies]
+async-trait = "0.1"
+bytes = "1"
+env_logger = "0.11"
+pingora = { version = "0.9", features = ["proxy", "rustls"] }
+tokio = { version = "1", features = ["time"] }
+
+[lints]
+workspace = true
