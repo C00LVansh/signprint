@@ -45,6 +45,28 @@ pub trait Store: Send + Sync {
     fn is_revoked(&self, sid: &SessionId, now: u64) -> bool;
 }
 
+impl<T: Store + ?Sized> Store for std::sync::Arc<T> {
+    fn record_request(
+        &self,
+        sid: &SessionId,
+        tab: u32,
+        ctr: u64,
+        expires_at: u64,
+        now: u64,
+    ) -> ReplayOutcome {
+        (**self).record_request(sid, tab, ctr, expires_at, now)
+    }
+    fn spend_challenge(&self, id: &[u8; 16], expires_at: u64, now: u64) -> bool {
+        (**self).spend_challenge(id, expires_at, now)
+    }
+    fn revoke(&self, sid: &SessionId, expires_at: u64) {
+        (**self).revoke(sid, expires_at)
+    }
+    fn is_revoked(&self, sid: &SessionId, now: u64) -> bool {
+        (**self).is_revoked(sid, now)
+    }
+}
+
 #[derive(Debug)]
 struct Session {
     expires_at: u64,
