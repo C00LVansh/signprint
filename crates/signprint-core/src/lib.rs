@@ -3,4 +3,5 @@
 //! upstream app sees. The Pingora proxy and any future middleware are thin
 //! layers over this.
 
+pub mod network;
 pub mod store;
