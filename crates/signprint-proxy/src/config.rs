@@ -89,6 +89,10 @@ pub struct NetworkConfig {
     pub trusted_upstreams: Vec<String>,
     #[serde(default = "default_ja4_header")]
     pub ja4_header: String,
+    /// Header carrying the real client IP from a trusted hop, e.g.
+    /// "cf-connecting-ip" behind a Cloudflare tunnel.
+    #[serde(default)]
+    pub client_ip_header: Option<String>,
 }
 
 // The field defaults only apply when [network] is present at all; without
@@ -98,6 +102,7 @@ impl Default for NetworkConfig {
         Self {
             trusted_upstreams: Vec::new(),
             ja4_header: default_ja4_header(),
+            client_ip_header: None,
         }
     }
 }

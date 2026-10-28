@@ -91,10 +91,22 @@ pub struct ForwardedTrusted {
 
 impl ForwardedTrusted {
     /// `peer_ip` is the address of the connection we actually received.
-    /// `forwarded_ja4n` is the header value, if present. From an untrusted
-    /// peer it's ignored outright: anyone can set a header.
-    pub fn network(&self, peer_ip: IpAddr, forwarded_ja4n: Option<&str>) -> Network {
+    /// `forwarded_ja4n` and `forwarded_ip` are header values, if present.
+    /// From an untrusted peer both are ignored outright: anyone can set a
+    /// header.
+    pub fn network(
+        &self,
+        peer_ip: IpAddr,
+        forwarded_ja4n: Option<&str>,
+        forwarded_ip: Option<&str>,
+    ) -> Network {
         let trusted = self.trusted.iter().any(|c| c.contains(peer_ip));
+        // e.g. CF-Connecting-IP behind a Cloudflare tunnel, where every
+        // connection otherwise comes from the tunnel container
+        let peer_ip = match forwarded_ip {
+            Some(v) if trusted => v.trim().parse().unwrap_or(peer_ip),
+            _ => peer_ip,
+        };
         match forwarded_ja4n {
             Some(j) if trusted && is_plausible_ja4(j) => Network {
                 peer_ip,
@@ -154,15 +166,30 @@ mod tests {
         };
         let ja4 = "t13d1516h2_8daaf6152771_02713d6af862";
 
-        let n = f.network(ip("10.1.2.3"), Some(ja4));
+        let n = f.network(ip("10.1.2.3"), Some(ja4), None);
         assert_eq!(n.provenance, Provenance::Forwarded);
         assert_eq!(n.ja4n.as_deref(), Some(ja4));
 
-        let n = f.network(ip("203.0.113.9"), Some(ja4));
+        let n = f.network(ip("203.0.113.9"), Some(ja4), None);
         assert_eq!(n.provenance, Provenance::Absent);
         assert_eq!(n.ja4n, None);
 
-        let n = f.network(ip("10.1.2.3"), Some("not a ja4; drop table"));
+        let n = f.network(ip("10.1.2.3"), Some("not a ja4; drop table"), None);
         assert_eq!(n.provenance, Provenance::Absent);
+    }
+
+    #[test]
+    fn forwarded_client_ip_only_from_trusted_hops() {
+        let f = ForwardedTrusted {
+            trusted: vec!["172.18.0.0/16".parse().unwrap()],
+        };
+        let n = f.network(ip("172.18.0.4"), None, Some("198.51.100.7"));
+        assert_eq!(n.peer_ip, ip("198.51.100.7"));
+        // anyone else claiming an IP is ignored
+        let n = f.network(ip("203.0.113.9"), None, Some("198.51.100.7"));
+        assert_eq!(n.peer_ip, ip("203.0.113.9"));
+        // garbage falls back to the connection's address
+        let n = f.network(ip("172.18.0.4"), None, Some("not an ip"));
+        assert_eq!(n.peer_ip, ip("172.18.0.4"));
     }
 }

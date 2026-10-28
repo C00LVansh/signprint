@@ -57,6 +57,8 @@ pub struct Incoming<'a> {
     pub content_digest: Option<&'a str>,
     /// JA4 header from the previous hop (middleware mode only).
     pub forwarded_ja4: Option<&'a str>,
+    /// Client IP header from the previous hop (middleware mode only).
+    pub forwarded_ip: Option<&'a str>,
     pub peer_ip: Option<IpAddr>,
     /// ja4n we computed ourselves from the ClientHello.
     pub ja4n: Option<String>,
@@ -426,7 +428,7 @@ impl App {
     pub fn network(&self, req: &Incoming<'_>) -> Network {
         let peer = req.peer_ip.unwrap_or(IpAddr::from([0, 0, 0, 0]));
         match &self.forwarded {
-            Some(f) => f.network(peer, req.forwarded_ja4),
+            Some(f) => f.network(peer, req.forwarded_ja4, req.forwarded_ip),
             None => Network::direct(peer, req.ja4n.clone()),
         }
     }

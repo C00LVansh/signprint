@@ -74,6 +74,7 @@ pub struct Proxy {
     app: App,
     upstream: Upstream,
     ja4_header: String,
+    client_ip_header: Option<String>,
 }
 
 struct Upstream {
@@ -186,6 +187,10 @@ impl ProxyHttp for Proxy {
                 peer_ip,
                 ja4n: fp.as_ref().map(|f| f.ja4n.clone()),
                 forwarded_ja4: header(req, &self.ja4_header),
+                forwarded_ip: self
+                    .client_ip_header
+                    .as_deref()
+                    .and_then(|h| header(req, h)),
                 user_agent: header(req, "user-agent"),
                 sec_ch_ua: header(req, "sec-ch-ua"),
                 calibrate_token: header(req, "signprint-calibrate"),
@@ -234,6 +239,10 @@ impl ProxyHttp for Proxy {
             signature: header(req, "signature"),
             content_digest: header(req, "content-digest"),
             forwarded_ja4: header(req, &self.ja4_header),
+            forwarded_ip: self
+                .client_ip_header
+                .as_deref()
+                .and_then(|h| header(req, h)),
             peer_ip,
             ja4n: fp.map(|f| f.ja4n),
             user_agent: header(req, "user-agent"),
@@ -300,6 +309,11 @@ pub fn run(cfg: Config, app: App) -> ! {
             sni: cfg.upstream.sni.clone(),
         },
         ja4_header: cfg.network.ja4_header.to_ascii_lowercase(),
+        client_ip_header: cfg
+            .network
+            .client_ip_header
+            .as_ref()
+            .map(|h| h.to_ascii_lowercase()),
     };
     let mut service = http_proxy_service(&server.configuration, proxy);
 
