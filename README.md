@@ -13,7 +13,7 @@ Reverse-engineering the client doesn't help much, because the key that matters o
 
 ## Status
 
-Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. Sessions are scored with rule packs and carry a band (0 to 3) into every verdict; high bands have to earn their session with an Argon2id proof of work, and the canvas challenge checks a browser renders like the device it claims to be. The public demo is next.
+Early, but the core loop works: a browser can get a session from the proxy and make signed requests, and CI runs that end to end in Chromium, Firefox and WebKit against the real proxy binary. Sessions are scored with rule packs and carry a band (0 to 3) into every verdict; high bands have to earn their session with an Argon2id proof of work, and the canvas challenge checks a browser renders like the device it claims to be. There's a Docker setup for a public demo in `deploy/`.
 
 - [x] `signprint-wire`: token/challenge formats, RFC 9421 profile, test vectors
 - [x] TypeScript signer (`client/`), tested against the same vectors and in Chromium/Firefox/WebKit
@@ -25,7 +25,7 @@ Early, but the core loop works: a browser can get a session from the proxy and m
 - [x] scoring with rule packs (`rulepacks/core` is built in)
 - [x] canvas challenge: known-answer noise check, Picasso-style render, WebGL render judged against the reported GPU, calibration
 - [x] Argon2id proof-of-work step-up for high bands
-- [ ] demo you can try to break
+- [x] demo you can try to break (`deploy/`, see [deploy/README.md](deploy/README.md))
 
 ## Layout
 
