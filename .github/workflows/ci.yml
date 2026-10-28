@@ -81,3 +81,17 @@ jobs:
           npm run build
           npx playwright install --with-deps chromium firefox webkit
       - run: crates/signprint-proxy/tests/e2e/browser.sh target/debug/signprint-proxy
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: signprint:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

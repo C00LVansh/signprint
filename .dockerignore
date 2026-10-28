@@ -1,0 +1,11 @@
+target
+.git
+client/node_modules
+client/dist
+client/test-results
+client/playwright-report
+deploy/.env
+deploy/config/keyring.json
+docs
+research
+spikes

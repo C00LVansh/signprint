@@ -1,0 +1,39 @@
+# Demo configuration: enforce mode, everything under /api/ signed.
+
+mode = "enforce"
+
+[listen]
+# TLS is terminated in front of us (Cloudflare tunnel). Switch to `tls` and
+# add a [tls] section to terminate it here instead, which also gets you JA4.
+plain = "0.0.0.0:8090"
+
+[upstream]
+addr = "signprint-demo:3000"
+
+[keys]
+keyring = "/etc/signprint/keyring.json"
+upstream_secret_env = "SIGNPRINT_UPSTREAM_SECRET"
+log_root_env = "SIGNPRINT_LOG_ROOT"
+
+[network]
+# Docker's private ranges: that's where the tunnel connector lives. Only
+# connections from there may tell us the real client IP.
+trusted_upstreams = ["172.16.0.0/12", "10.0.0.0/8"]
+client_ip_header = "cf-connecting-ip"
+
+[session]
+ttl_secs = 600
+max_requests = 1000
+
+[canvas]
+kb_path = "/var/lib/signprint/canvas.json"
+min_devices = 2
+calibrate_token_env = "SIGNPRINT_CALIBRATE"
+
+[pow]
+enabled = true
+stepup_band = 2
+
+[[route]]
+path_prefix = "/api/"
+require = "signed"

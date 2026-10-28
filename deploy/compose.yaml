@@ -1,0 +1,50 @@
+# The public demo: signprint-proxy in front of signprint-demo.
+#
+#   ./setup.sh                 # once: generates keys into ./config and ./.env
+#   docker compose up -d --build
+#
+# The proxy listens on plain HTTP inside Docker. Put TLS in front of it
+# either with a Cloudflare tunnel (set TUNNEL_NETWORK to the tunnel's Docker
+# network and route a hostname to http://signprint-proxy:8090), or let the
+# proxy terminate TLS itself; see README.md.
+
+name: signprint
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: signprint:latest
+    container_name: signprint-proxy
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config:/etc/signprint:ro
+      - signprint-data:/var/lib/signprint
+    ports:
+      # handy for checking it from the host; nothing outside needs this
+      - "127.0.0.1:8090:8090"
+    networks: [internal, tunnel]
+    depends_on: [demo]
+
+  demo:
+    image: signprint:latest
+    container_name: signprint-demo
+    restart: unless-stopped
+    entrypoint: ["signprint-demo"]
+    command: []
+    env_file: .env
+    environment:
+      LISTEN: 0.0.0.0:3000
+    # only the proxy can reach it
+    networks: [internal]
+
+volumes:
+  signprint-data:
+
+networks:
+  internal:
+  tunnel:
+    external: true
+    name: ${TUNNEL_NETWORK:-signprint-tunnel}
